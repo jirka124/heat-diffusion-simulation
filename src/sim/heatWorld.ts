@@ -1,119 +1,218 @@
 // src/sim/heatWorld.ts
 
+export type Material = {
+  id: string;
+  name: string;
+
+  // thermal properties (relative units are OK)
+  cap: number; // heat capacity (m*c) for a cell
+  k: number; // conductivity-ish -> used to form edge conductance
+
+  // editor / infrastructure view
+  color: string; // hex like "#AABBCC"
+
+  // optional emitter: heater/AC as a "material"
+  // If set, each step will relax the cell temperature toward emitTemp.
+  // Positive = heating, negative (or just lower target) = cooling.
+  emitTemp: number | null;
+
+  // how strongly the cell is driven toward emitTemp per second
+  // (0 = off, typical 0.5..5 depending on dt and stability you want)
+  emitStrength: number;
+};
+
 export type Cell = {
-  T: number; // temperature
-  cap: number; // heat capacity (m*c) - bigger => slower change
+  T: number;
+  materialId: string;
+  unitId: string | null; // for later (apartment)
 };
 
 export type World = {
   w: number;
   h: number;
   cells: Cell[];
-
-  // boundary conditions:
-  // fixedMask[i] = true -> keep T fixed to fixedTemp[i]
-  fixedMask: boolean[];
-  fixedTemp: Float64Array;
-
-  // adjacency in grid is implicit (neighbors4),
-  // but we keep conductance per cell edge as a single scalar for MVP
-  g: number; // conductance
+  materials: Record<string, Material>;
+  _dQ: Float64Array;
 };
 
-export type BoundaryTemps = {
-  left: number;
-  right: number;
-  top: number;
-  bottom: number;
-};
+export type Vec2 = { x: number; y: number };
 
-function idx(x: number, y: number, w: number) {
-  return y * w + x;
+export function xyToN(pos: Vec2, w: number) {
+  return pos.y * w + pos.x;
+}
+
+export function nToXy(n: number, w: number): Vec2 {
+  return { x: n % w, y: Math.floor(n / w) };
+}
+
+export function inBounds(pos: Vec2, w: number, h: number) {
+  return pos.x >= 0 && pos.x < w && pos.y >= 0 && pos.y < h;
+}
+
+function harmonicMean(a: number, b: number) {
+  const eps = 1e-12;
+  return (2 * a * b) / (a + b + eps);
+}
+
+export function defaultMaterials(): Record<string, Material> {
+  const air: Material = {
+    id: 'air',
+    name: 'Air',
+    cap: 40,
+    k: 1.0,
+    color: '#2D3A4A',
+    emitTemp: null,
+    emitStrength: 0,
+  };
+
+  const brick: Material = {
+    id: 'brick',
+    name: 'Brick wall',
+    cap: 400,
+    k: 0.25,
+    color: '#7B4E2B',
+    emitTemp: null,
+    emitStrength: 0,
+  };
+
+  const concrete: Material = {
+    id: 'concrete',
+    name: 'Concrete',
+    cap: 650,
+    k: 0.45,
+    color: '#6E7076',
+    emitTemp: null,
+    emitStrength: 0,
+  };
+
+  const insulation: Material = {
+    id: 'eps',
+    name: 'Insulation (EPS)',
+    cap: 90,
+    k: 0.03,
+    color: '#D8D3A8',
+    emitTemp: null,
+    emitStrength: 0,
+  };
+
+  const windowMat: Material = {
+    id: 'window',
+    name: 'Window',
+    cap: 120,
+    k: 1.6,
+    color: '#7FB3D5',
+    emitTemp: null,
+    emitStrength: 0,
+  };
+
+  // Heater/AC as materials (targets)
+  const heater: Material = {
+    id: 'heater',
+    name: 'Heater',
+    cap: 120,
+    k: 1.2,
+    color: '#C0392B',
+    emitTemp: 55, // target temperature
+    emitStrength: 2.0, // drive strength
+  };
+
+  const ac: Material = {
+    id: 'ac',
+    name: 'AC',
+    cap: 120,
+    k: 1.2,
+    color: '#1F7AE0',
+    emitTemp: 16,
+    emitStrength: 2.0,
+  };
+
+  // Outside boundary as a "material" is optional; you can just paint it on edges.
+  const outside: Material = {
+    id: 'outside',
+    name: 'Outside',
+    cap: 999999, // huge so it behaves almost fixed
+    k: 1.0,
+    color: '#0B1B2B',
+    emitTemp: 0, // behaves like fixed outside temperature
+    emitStrength: 5.0,
+  };
+
+  return {
+    air,
+    brick,
+    concrete,
+    eps: insulation,
+    window: windowMat,
+    heater,
+    ac,
+    outside,
+  };
 }
 
 export function createWorld(opts: {
   w: number;
   h: number;
   initTemp: number;
-  cap: number;
-  g: number;
-  boundary: BoundaryTemps;
+  materials?: Record<string, Material>;
+  defaultMaterialId?: string; // usually "air"
 }): World {
-  const { w, h, initTemp, cap, g, boundary } = opts;
+  const materials = opts.materials ?? defaultMaterials();
+  const defaultId = opts.defaultMaterialId ?? 'air';
+  if (!materials[defaultId]) throw new Error(`Missing default material: ${defaultId}`);
 
-  const n = w * h;
+  const n = opts.w * opts.h;
   const cells: Cell[] = new Array(n);
-  const fixedMask: boolean[] = new Array(n).fill(false);
-  const fixedTemp = new Float64Array(n);
 
   for (let i = 0; i < n; i++) {
-    cells[i] = { T: initTemp, cap };
-    fixedTemp[i] = initTemp;
+    cells[i] = {
+      T: opts.initTemp,
+      materialId: defaultId,
+      unitId: null,
+    };
   }
 
-  // Mark boundaries as fixed (like NetLogo set-edge-temperatures)
-  // left/right edges
-  for (let y = 0; y < h; y++) {
-    const iL = idx(0, y, w);
-    fixedMask[iL] = true;
-    fixedTemp[iL] = boundary.left;
-
-    const iR = idx(w - 1, y, w);
-    fixedMask[iR] = true;
-    fixedTemp[iR] = boundary.right;
-  }
-
-  // top/bottom edges
-  for (let x = 0; x < w; x++) {
-    const iT = idx(x, 0, w);
-    fixedMask[iT] = true;
-    fixedTemp[iT] = boundary.top;
-
-    const iB = idx(x, h - 1, w);
-    fixedMask[iB] = true;
-    fixedTemp[iB] = boundary.bottom;
-  }
-
-  // corners: average like NetLogo (optional but nice)
-  fixedTemp[idx(0, 0, w)] = 0.5 * (boundary.left + boundary.top);
-  fixedTemp[idx(w - 1, 0, w)] = 0.5 * (boundary.right + boundary.top);
-  fixedTemp[idx(0, h - 1, w)] = 0.5 * (boundary.left + boundary.bottom);
-  fixedTemp[idx(w - 1, h - 1, w)] = 0.5 * (boundary.right + boundary.bottom);
-
-  // enforce fixed temps immediately
-  for (let i = 0; i < n; i++) {
-    if (fixedMask[i]) cells[i].T = fixedTemp[i];
-  }
-
-  return { w, h, cells, fixedMask, fixedTemp, g };
+  return { w: opts.w, h: opts.h, cells, materials, _dQ: new Float64Array(n) };
 }
 
 /**
- * One explicit diffusion step using energy flow between neighbors4.
- * dt: time step
- *
- * Update rule:
- * q = g * (Ti - Tj) * dt
- * dQ[i] -= q; dQ[j] += q
- * Ti += dQ[i] / cap_i
+ * One simulation step:
+ * 1) diffuse energy between neighbors4 using per-edge conductance derived from materials k
+ * 2) update temperature using per-cell cap
+ * 3) apply material emitters (heater/AC/outside) as relaxation toward emitTemp
  */
 export function stepWorld(world: World, dt: number) {
-  const { w, h, cells, fixedMask, fixedTemp, g } = world;
+  const { w, h, cells, materials } = world;
   const n = w * h;
 
-  const dQ = new Float64Array(n);
+  const dQ = world._dQ;
+  if (dQ.length !== n) {
+    // kdybys někdy měnil rozměry bez createWorld (jinak netřeba)
+    world._dQ = new Float64Array(n);
+  } else {
+    dQ.fill(0);
+  }
 
-  // helper to process an undirected edge once (i <-> j)
   const flow = (i: number, j: number) => {
-    const Ti = cells[i].T;
-    const Tj = cells[j].T;
+    const ci = cells[i];
+    const cj = cells[j];
+
+    const mi = materials[ci.materialId];
+    const mj = materials[cj.materialId];
+    if (!mi || !mj) return;
+
+    const Ti = ci.T;
+    const Tj = cj.T;
+
+    // conductance between cells derived from both materials
+    const g = harmonicMean(mi.k, mj.k);
+
+    // energy transferred this step
     const q = g * (Ti - Tj) * dt;
     dQ[i] -= q;
     dQ[j] += q;
   };
 
-  // iterate grid edges once:
-  // horizontal neighbors (x -> x+1)
+  // horizontal edges
   for (let y = 0; y < h; y++) {
     const row = y * w;
     for (let x = 0; x < w - 1; x++) {
@@ -122,7 +221,7 @@ export function stepWorld(world: World, dt: number) {
     }
   }
 
-  // vertical neighbors (y -> y+1)
+  // vertical edges
   for (let y = 0; y < h - 1; y++) {
     const row = y * w;
     const rowBelow = (y + 1) * w;
@@ -132,15 +231,25 @@ export function stepWorld(world: World, dt: number) {
     }
   }
 
-  // apply temperature updates
+  // apply temperature changes from diffusion
   for (let i = 0; i < n; i++) {
-    if (fixedMask[i]) continue;
-    cells[i].T += dQ[i] / cells[i].cap;
+    const c = cells[i];
+    const m = materials[c.materialId];
+    if (!m) continue;
+
+    const cap = Math.max(1e-9, m.cap);
+    c.T += dQ[i] / cap;
   }
 
-  // enforce boundary temps
+  // apply emitters (heater / AC / outside)
+  // relaxation: T += (emitTemp - T) * (1 - exp(-strength*dt))
   for (let i = 0; i < n; i++) {
-    if (fixedMask[i]) cells[i].T = fixedTemp[i];
+    const c = cells[i];
+    const m = materials[c.materialId];
+    if (!m || m.emitTemp == null || m.emitStrength <= 0) continue;
+
+    const k = 1 - Math.exp(-m.emitStrength * dt); // stable blending factor
+    c.T = c.T + (m.emitTemp - c.T) * k;
   }
 }
 
@@ -154,4 +263,15 @@ export function getMinMaxT(world: World) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: 0, max: 1 };
   if (min === max) return { min, max: min + 1e-9 };
   return { min, max };
+}
+
+// Safe material delete helper: replaces references with fallbackId
+export function deleteMaterial(world: World, id: string, fallbackId = 'air') {
+  if (!world.materials[id]) return;
+  if (!world.materials[fallbackId]) throw new Error(`Missing fallback material: ${fallbackId}`);
+
+  delete world.materials[id];
+  for (const c of world.cells) {
+    if (c.materialId === id) c.materialId = fallbackId;
+  }
 }
