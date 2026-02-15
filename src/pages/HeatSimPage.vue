@@ -769,13 +769,18 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, markRaw } from 'vu
 import {
   createWorld,
   defaultMaterials,
+  defaultUnits,
   deleteMaterial,
   getMinMaxT,
   nToXy,
   stepWorld,
   xyToN,
-  type Material,
+  SHARED_UNIT_ID,
+  type Unit,
+  type UnitParams,
+  type TempRange,
   type World,
+  type Material,
 } from 'src/sim/heatWorld';
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
@@ -837,59 +842,16 @@ let panStart = { x: 0, y: 0, sl: 0, st: 0 };
 
 const locked = computed(() => tick.value > 0);
 
-type TempRange = { min: number; max: number };
-
-type UnitParams =
-  | { kind: 'shared'; comfy: TempRange }
-  | {
-      kind: 'unit';
-      homeFromMin: number; // 0..1439
-      homeToMin: number; // 0..1439
-      home: TempRange;
-      away: TempRange;
-    };
-
-type UnitDef = { id: string; name: string; color: string; params: UnitParams };
-
-const SHARED_UNIT_ID = 'shared';
-
-const units = reactive<UnitDef[]>([
-  {
-    id: SHARED_UNIT_ID,
-    name: 'Shared space',
-    color: '#9E9E9E',
-    params: { kind: 'shared', comfy: { min: 14, max: 22 } },
-  },
-  {
-    id: 'A',
-    name: 'Unit A',
-    color: '#8E44AD',
-    params: {
-      kind: 'unit',
-      homeFromMin: 22 * 60,
-      homeToMin: 6 * 60,
-      home: { min: 20, max: 22 },
-      away: { min: 16, max: 18 },
-    },
-  },
-  {
-    id: 'B',
-    name: 'Unit B',
-    color: '#27AE60',
-    params: {
-      kind: 'unit',
-      homeFromMin: 16 * 60,
-      homeToMin: 8 * 60,
-      home: { min: 20, max: 22 },
-      away: { min: 15, max: 17 },
-    },
-  },
-]);
-
-const selectedUnitId = ref<UnitDef['id']>(SHARED_UNIT_ID);
+const selectedUnitId = ref<Unit['id']>(SHARED_UNIT_ID);
 
 type UnitPaintTool = 'assign' | 'pick' | 'fill' | 'clear';
 const unitPaintTool = ref<UnitPaintTool>('assign');
+
+const unitsMap = computed(() => world.value?.units ?? {});
+const unitsList = computed<Unit[]>(() => Object.values(unitsMap.value));
+const unitOptions = computed(() =>
+  unitsList.value.map((u) => ({ label: `${u.name} (${u.id})`, value: u.id })),
+);
 
 const endSimSec = computed<number | null>(() => {
   if (!cfg.endEnabled) return null;
@@ -933,12 +895,6 @@ const materialsList = computed(() => {
 
 const simTimeLabel = computed(() => fmtSimTime(simTimeSec.value));
 
-const unitsList = computed(() => units.slice());
-
-const unitOptions = computed(() =>
-  units.map((u) => ({ label: `${u.name} (${u.id})`, value: u.id })),
-);
-
 const dayIndex = computed(() => Math.floor(simTimeSec.value / 86400));
 
 const secOfDay = computed(() => {
@@ -951,7 +907,7 @@ const dayTimeLabel = computed(() => fmtHmsFromSec(secOfDay.value));
 
 const simUnitRows = computed(() => {
   const sDay = secOfDay.value;
-  return units.map((u) => {
+  return unitsList.value.map((u) => {
     const active = getActiveRange(u, sDay);
     const home = u.params.kind === 'unit' ? isHomeNow(u, sDay) : null;
 
@@ -969,10 +925,6 @@ const simUnitRows = computed(() => {
     };
   });
 });
-
-const lockReason = computed(() =>
-  locked.value ? 'Locked because simulation already started. Use Setup/Reset to edit.' : '',
-);
 
 // --- dialog for materials ---
 const matDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({
@@ -1043,7 +995,7 @@ function updateUnitStats() {
   }
 
   const out: Record<string, UnitStat> = {};
-  for (const u of units) {
+  for (const u of unitsList.value) {
     const c = cnt[u.id] ?? 0;
     const s = sum[u.id] ?? 0;
     out[u.id] = { count: c, avgT: c > 0 ? s / c : null };
@@ -1054,7 +1006,7 @@ function updateUnitStats() {
 }
 
 function getUnitById(id: string) {
-  return units.find((u) => u.id === id) || null;
+  return world.value?.units?.[id] ?? null;
 }
 
 function onKeyDown(e: KeyboardEvent) {
@@ -1239,7 +1191,7 @@ function getUnitColor(unitId: string | null): [number, number, number] {
   return hexToRgb(u.color);
 }
 
-function isHomeNow(u: UnitDef, secOfDay: number) {
+function isHomeNow(u: Unit, secOfDay: number) {
   if (u.params.kind !== 'unit') return false;
 
   const tMin = Math.floor(secOfDay / 60) % 1440;
@@ -1251,7 +1203,7 @@ function isHomeNow(u: UnitDef, secOfDay: number) {
   return tMin >= from || tMin < to; // wrap over midnight
 }
 
-function getActiveRange(u: UnitDef, secOfDay: number): TempRange {
+function getActiveRange(u: Unit, secOfDay: number): TempRange {
   if (u.params.kind === 'shared') return u.params.comfy;
   return isHomeNow(u, secOfDay) ? u.params.home : u.params.away;
 }
@@ -1260,7 +1212,7 @@ function fmtRange(r: TempRange) {
   return `${r.min}–${r.max}°C`;
 }
 
-function fmtSchedule(u: UnitDef) {
+function fmtSchedule(u: Unit) {
   if (u.params.kind !== 'unit') return '—';
   return `${fmtHm(u.params.homeFromMin)}–${fmtHm(u.params.homeToMin)}`;
 }
@@ -1367,18 +1319,20 @@ function setup() {
   const w = Math.max(10, Math.min(500, Math.floor(cfg.w)));
   const h = Math.max(10, Math.min(500, Math.floor(cfg.h)));
 
-  const mats = defaultMaterials();
   const wld = createWorld({
     w,
     h,
     initTemp: cfg.initTemp,
-    materials: mats,
+    materials: defaultMaterials(),
+    units: defaultUnits(),
     defaultMaterialId: 'air',
+    defaultUnitId: null,
   });
   wld.cells = markRaw(wld.cells);
   world.value = reactive(wld) as World;
 
   selectedMaterialId.value = 'air';
+  selectedUnitId.value = SHARED_UNIT_ID;
 
   tick.value = 0;
   simTimeSec.value = 0;
@@ -1795,12 +1749,10 @@ function normalizeUnitId(s: string) {
 }
 
 function saveUnit() {
-  if (locked.value) return;
+  if (!world.value) return;
 
   const id = unitDialog.mode === 'add' ? normalizeUnitId(unitForm.id) : unitForm.id;
   if (!id) return;
-
-  // shared je rezervovaný (jen edit existujícího)
   if (id === SHARED_UNIT_ID && unitDialog.mode === 'add') return;
 
   const name = unitForm.name.trim() || id;
@@ -1818,37 +1770,35 @@ function saveUnit() {
         away: normRange(unitForm.awayMin, unitForm.awayMax),
       };
 
+  const u: Unit = { id, name, color, params };
+
   if (unitDialog.mode === 'add') {
-    if (getUnitById(id)) return;
-    units.push({ id, name, color, params });
+    if (world.value.units[id]) return;
+    world.value.units[id] = u;
     selectedUnitId.value = id;
   } else {
-    const u = getUnitById(id);
-    if (!u) return;
-    u.name = name;
-    u.color = color;
-    u.params = params;
+    if (!world.value.units[id]) return;
+    world.value.units[id] = { ...world.value.units[id], name, color, params };
   }
 
   unitDialog.open = false;
-  requestRender();
+  updateUnitStats();
+  requestRender(true);
 }
 
 function removeUnit(id: string) {
-  if (locked.value) return;
-
   if (!world.value) return;
   if (id === SHARED_UNIT_ID) return;
 
-  const idx = units.findIndex((u) => u.id === id);
-  if (idx >= 0) units.splice(idx, 1);
+  delete world.value.units[id];
 
-  // replace in cells
   for (const c of world.value.cells) {
     if (c.unitId === id) c.unitId = null;
   }
 
   if (selectedUnitId.value === id) selectedUnitId.value = SHARED_UNIT_ID;
+
+  updateUnitStats();
   requestRender(true);
 }
 

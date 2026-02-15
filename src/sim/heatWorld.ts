@@ -23,15 +23,44 @@ export type Cell = {
   unitId: string | null; // apartment
 };
 
+export type TempRange = { min: number; max: number };
+
+export type UnitParams =
+  | { kind: 'shared'; comfy: TempRange }
+  | {
+      kind: 'unit';
+      homeFromMin: number; // 0..1439
+      homeToMin: number; // 0..1439
+      home: TempRange;
+      away: TempRange;
+    };
+
+export type UnitRuntime = {
+  allCells: number[];
+  heaterCells: number[];
+  avgTemp: number;
+};
+
+export type Unit = {
+  id: string;
+  name: string;
+  color: string;
+  params: UnitParams;
+  runtime?: UnitRuntime;
+};
+
 export type World = {
   w: number;
   h: number;
   cells: Cell[];
   materials: Record<string, Material>;
+  units: Record<string, Unit>;
   _dQ: Float64Array;
 };
 
 export type Vec2 = { x: number; y: number };
+
+export const SHARED_UNIT_ID = 'SHARED';
 
 export function xyToN(pos: Vec2, w: number) {
   return pos.y * w + pos.x;
@@ -48,6 +77,47 @@ export function inBounds(pos: Vec2, w: number, h: number) {
 function harmonicMean(a: number, b: number) {
   const eps = 1e-12;
   return (2 * a * b) / (a + b + eps);
+}
+
+export function defaultUnits(): Record<string, Unit> {
+  const shared: Unit = {
+    id: SHARED_UNIT_ID,
+    name: 'Shared space',
+    color: '#9E9E9E',
+    params: { kind: 'shared', comfy: { min: 14, max: 22 } },
+  };
+
+  const a: Unit = {
+    id: 'A',
+    name: 'Unit A',
+    color: '#8E44AD',
+    params: {
+      kind: 'unit',
+      homeFromMin: 22 * 60,
+      homeToMin: 6 * 60,
+      home: { min: 20, max: 22 },
+      away: { min: 16, max: 18 },
+    },
+  };
+
+  const b: Unit = {
+    id: 'B',
+    name: 'Unit B',
+    color: '#27AE60',
+    params: {
+      kind: 'unit',
+      homeFromMin: 16 * 60,
+      homeToMin: 8 * 60,
+      home: { min: 20, max: 22 },
+      away: { min: 15, max: 17 },
+    },
+  };
+
+  return {
+    [shared.id]: shared,
+    [a.id]: a,
+    [b.id]: b,
+  };
 }
 
 export function defaultMaterials(): Record<string, Material> {
@@ -142,11 +212,19 @@ export function createWorld(opts: {
   h: number;
   initTemp: number;
   materials?: Record<string, Material>;
+  units?: Record<string, Unit>;
   defaultMaterialId?: string; // usually "air"
+  defaultUnitId?: string | null; // usually null (no unit)
 }): World {
   const materials = opts.materials ?? defaultMaterials();
-  const defaultId = opts.defaultMaterialId ?? 'air';
-  if (!materials[defaultId]) throw new Error(`Missing default material: ${defaultId}`);
+  const defaultMaterialId = opts.defaultMaterialId ?? 'air';
+  if (!materials[defaultMaterialId])
+    throw new Error(`Missing default material: ${defaultMaterialId}`);
+
+  const units = opts.units ?? defaultUnits();
+  const defaultUnitId = opts.defaultUnitId ?? null;
+  if (defaultUnitId !== null && !units[defaultUnitId])
+    throw new Error(`Missing default unit: ${defaultUnitId}`);
 
   const n = opts.w * opts.h;
   const cells: Cell[] = new Array(n);
@@ -154,12 +232,12 @@ export function createWorld(opts: {
   for (let i = 0; i < n; i++) {
     cells[i] = {
       T: opts.initTemp,
-      materialId: defaultId,
-      unitId: null,
+      materialId: defaultMaterialId,
+      unitId: defaultUnitId,
     };
   }
 
-  return { w: opts.w, h: opts.h, cells, materials, _dQ: new Float64Array(n) };
+  return { w: opts.w, h: opts.h, cells, materials, units, _dQ: new Float64Array(n) };
 }
 
 /**
