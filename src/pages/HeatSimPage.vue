@@ -60,30 +60,71 @@
                       :min="0"
                       :max="60 * 24 - 1"
                     />
-                    <div class="row q-col-gutter-sm">
-                      <div class="col-6">
-                        <q-input
-                          v-model.number="cfg.simTicksPerSec"
-                          type="number"
-                          label="Model Speed (tics/sec)"
-                          dense
-                          outlined
-                          :min="0.1"
-                          :max="1000"
-                        />
-                      </div>
+                  </div>
+                  <div class="row q-col-gutter-sm">
+                    <div class="col-12">
+                      <q-toggle v-model="cfg.endEnabled" label="Auto-stop" />
+                    </div>
 
-                      <div class="col-6">
-                        <q-input
-                          v-model.number="cfg.renderFpsLimit"
-                          type="number"
-                          label="Render FPS limit"
-                          dense
-                          outlined
-                          :min="1"
-                          :max="60"
-                        />
+                    <div class="col-8">
+                      <q-input
+                        v-model.number="cfg.endValue"
+                        type="number"
+                        label="End after"
+                        dense
+                        outlined
+                        :disable="!cfg.endEnabled"
+                        :min="0.01"
+                        step="0.5"
+                      />
+                    </div>
+
+                    <div class="col-4">
+                      <q-select
+                        v-model="cfg.endUnit"
+                        :options="[
+                          { label: 'hours', value: 'h' },
+                          { label: 'days', value: 'd' },
+                        ]"
+                        dense
+                        outlined
+                        emit-value
+                        map-options
+                        :disable="!cfg.endEnabled"
+                        label="Unit"
+                      />
+                    </div>
+
+                    <div class="col-12">
+                      <div class="text-caption text-grey-7">
+                        Limit: <b>{{ endSimSec == null ? '∞' : fmtSimTime(endSimSec) }}</b>
                       </div>
+                    </div>
+                  </div>
+
+                  <div class="row q-col-gutter-sm">
+                    <div class="col-6">
+                      <q-input
+                        v-model.number="cfg.simTicksPerSec"
+                        type="number"
+                        label="Model Speed (tics/sec)"
+                        dense
+                        outlined
+                        :min="0.1"
+                        :max="1000"
+                      />
+                    </div>
+
+                    <div class="col-6">
+                      <q-input
+                        v-model.number="cfg.renderFpsLimit"
+                        type="number"
+                        label="Render FPS limit"
+                        dense
+                        outlined
+                        :min="1"
+                        :max="60"
+                      />
                     </div>
                   </div>
                 </div>
@@ -92,6 +133,9 @@
                   <div class="text-subtitle2">Runtime overview</div>
                   <div class="text-caption text-grey-7 q-mb-sm">
                     Day <b>{{ dayIndex }}</b> • Time <b>{{ dayTimeLabel }}</b>
+                    <span v-if="endSimSec != null">
+                      • Remaining: <b>{{ fmtSimTime(Math.max(0, endSimSec - simTimeSec)) }}</b>
+                    </span>
                   </div>
 
                   <q-list bordered separator class="q-mt-sm">
@@ -760,6 +804,9 @@ const cfg = reactive({
   simTicksPerSec: 200,
   renderFpsLimit: 12,
   startDayTimeMin: 0,
+  endEnabled: true,
+  endValue: 30, // např. 30
+  endUnit: 'h' as 'h' | 'd', // hours/days
 });
 
 const world = ref<World | null>(null);
@@ -854,6 +901,16 @@ const selectedUnitId = ref<UnitDef['id']>(SHARED_UNIT_ID);
 
 type UnitPaintTool = 'assign' | 'pick' | 'fill' | 'clear';
 const unitPaintTool = ref<UnitPaintTool>('assign');
+
+const endSimSec = computed<number | null>(() => {
+  if (!cfg.endEnabled) return null;
+
+  const v = Number(cfg.endValue);
+  if (!Number.isFinite(v) || v <= 0) return null;
+
+  const mul = cfg.endUnit === 'd' ? 86400 : 3600;
+  return v * mul;
+});
 
 const viewModeLabel = computed(() => {
   if (viewMode.value === 'infra') return 'Infrastructure';
@@ -1359,9 +1416,16 @@ function resetTemps() {
 
 function stepOnce() {
   if (!world.value) return;
+
+  // když už jsme na limitu, nic nedělej
+  const lim = endSimSec.value;
+  if (lim != null && simTimeSec.value >= lim) return;
+
   stepWorld(world.value, cfg.dt);
   tick.value++;
   simTimeSec.value += cfg.dt;
+
+  enforceEndLimit();
   updateUnitStats();
   requestRender(true);
 }
@@ -1383,6 +1447,7 @@ function loop(ts: number) {
       stepWorld(world.value, cfg.dt);
       tick.value += 1;
       simTimeSec.value += cfg.dt;
+      enforceEndLimit();
       updateUnitStats();
       needsRender = true;
 
@@ -1578,6 +1643,18 @@ function onPointerDown(evt: PointerEvent) {
   lastPaintIndex = i;
   applyPaint(i);
   requestRender();
+}
+
+function enforceEndLimit() {
+  const lim = endSimSec.value;
+  if (lim == null) return;
+
+  if (simTimeSec.value >= lim) {
+    simTimeSec.value = lim; // ať to skončí přesně na hranici
+    running.value = false; // stop
+    needsRender = true;
+    forcedRender = true;
+  }
 }
 
 function onPointerMove(evt: PointerEvent) {
