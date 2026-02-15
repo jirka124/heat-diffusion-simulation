@@ -24,7 +24,7 @@ export type Material = {
 export type Cell = {
   T: number;
   materialId: string;
-  unitId: string | null; // for later (apartment)
+  unitId: string | null; // apartment
 };
 
 export type World = {

@@ -18,6 +18,7 @@
               <q-tab name="sim" label="Simulation" />
               <q-tab name="edit" label="Editor" />
               <q-tab name="mats" label="Materials" />
+              <q-tab name="units" label="Units" />
             </q-tabs>
 
             <q-separator />
@@ -89,7 +90,7 @@
                       class="full-width"
                       unelevated
                       color="grey-8"
-                      label="Reset temperature (keep infrastructure)"
+                      label="Reset temperature and time"
                       @click="resetTemps()"
                     />
                   </div>
@@ -220,6 +221,82 @@
                   Pozn.: smazání materiálu nahradí jeho buňky za <b>air</b>.
                 </div>
               </q-tab-panel>
+
+              <!-- UNITS TAB -->
+              <q-tab-panel name="units" class="q-pa-none q-pt-md">
+                <div class="row items-center justify-between">
+                  <div class="text-subtitle2">Units</div>
+                  <q-btn
+                    dense
+                    unelevated
+                    color="primary"
+                    icon="add"
+                    label="Add"
+                    @click="openAddUnit()"
+                  />
+                </div>
+
+                <q-select
+                  v-model="selectedUnitId"
+                  :options="unitOptions"
+                  label="Selected unit"
+                  dense
+                  outlined
+                  emit-value
+                  map-options
+                  class="q-mt-sm"
+                />
+
+                <q-btn-toggle
+                  v-model="unitPaintTool"
+                  spread
+                  unelevated
+                  class="q-mt-sm"
+                  :options="[
+                    { label: 'Assign', value: 'assign' },
+                    { label: 'Pick', value: 'pick' },
+                    { label: 'Fill', value: 'fill' },
+                    { label: 'Clear', value: 'clear' },
+                  ]"
+                />
+
+                <q-list bordered class="q-mt-sm">
+                  <q-item
+                    v-for="u in unitsList"
+                    :key="u.id"
+                    clickable
+                    v-ripple
+                    @click="selectedUnitId = u.id"
+                  >
+                    <q-item-section avatar>
+                      <div class="mat-swatch" :style="{ background: u.color }" />
+                    </q-item-section>
+
+                    <q-item-section>
+                      <q-item-label>
+                        {{ u.name }}
+                        <span class="text-caption text-grey-7">({{ u.id }})</span>
+                      </q-item-label>
+                    </q-item-section>
+
+                    <q-item-section side>
+                      <q-btn flat dense icon="edit" @click.stop="openEditUnit(u.id)" />
+                      <q-btn
+                        flat
+                        dense
+                        icon="delete"
+                        color="negative"
+                        :disable="u.id === SHARED_UNIT_ID"
+                        @click.stop="removeUnit(u.id)"
+                      />
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+
+                <div class="text-caption text-grey-7 q-mt-sm">
+                  Tip: přepni View na <b>Units</b>, a pak maluj přiřazení buněk k bytům / shared.
+                </div>
+              </q-tab-panel>
             </q-tab-panels>
           </q-card-section>
         </q-card>
@@ -247,11 +324,12 @@
                       { label: 'Infrastructure', value: 'infra' },
                       { label: 'Temperature', value: 'temp' },
                       { label: 'Combo', value: 'combo' },
+                      { label: 'Units', value: 'units' },
                     ]"
                   />
 
                   <q-slider
-                    v-if="viewMode === 'combo'"
+                    v-if="viewMode === 'combo' || viewMode === 'units'"
                     v-model="comboAlpha"
                     :min="0"
                     :max="100"
@@ -397,11 +475,53 @@
         </q-card-actions>
       </q-card>
     </q-dialog>
+
+    <!-- UNIT DIALOG -->
+    <q-dialog v-model="unitDialog.open">
+      <q-card style="width: 520px; max-width: 92vw">
+        <q-card-section>
+          <div class="text-h6">
+            {{ unitDialog.mode === 'add' ? 'Add unit' : 'Edit unit' }}
+          </div>
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-section class="q-gutter-sm">
+          <q-input
+            v-model="unitForm.id"
+            label="ID"
+            dense
+            outlined
+            :disable="unitDialog.mode === 'edit'"
+            hint="Např. A, B, C, A1..."
+          />
+          <q-input v-model="unitForm.name" label="Name" dense outlined />
+
+          <q-input v-model="unitForm.color" label="Color" dense outlined>
+            <template #append>
+              <q-icon name="colorize" class="cursor-pointer">
+                <q-popup-proxy cover transition-show="scale" transition-hide="scale">
+                  <q-color v-model="unitForm.color" format-model="hex" />
+                </q-popup-proxy>
+              </q-icon>
+            </template>
+          </q-input>
+        </q-card-section>
+
+        <q-separator />
+
+        <q-card-actions align="right">
+          <q-btn flat label="Cancel" v-close-popup />
+          <q-btn unelevated color="primary" label="Save" @click="saveUnit()" />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, markRaw, isReactive } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, markRaw } from 'vue';
 import {
   createWorld,
   defaultMaterials,
@@ -452,7 +572,7 @@ const minT = ref(0);
 const maxT = ref(60);
 let mmCounter = 0;
 
-type ViewMode = 'infra' | 'temp' | 'combo';
+type ViewMode = 'infra' | 'temp' | 'combo' | 'units';
 const viewMode = ref<ViewMode>('combo');
 const comboAlpha = ref(20); // 0..100
 
@@ -467,10 +587,26 @@ const spaceDown = ref(false);
 let panning = false;
 let panStart = { x: 0, y: 0, sl: 0, st: 0 };
 
+type UnitDef = { id: string; name: string; color: string };
+
+const SHARED_UNIT_ID = 'shared';
+
+const units = reactive<UnitDef[]>([
+  { id: SHARED_UNIT_ID, name: 'Shared space', color: '#9E9E9E' },
+  { id: 'A', name: 'Unit A', color: '#8E44AD' },
+  { id: 'B', name: 'Unit B', color: '#27AE60' },
+]);
+
+const selectedUnitId = ref<UnitDef['id']>(SHARED_UNIT_ID);
+
+type UnitPaintTool = 'assign' | 'pick' | 'fill' | 'clear';
+const unitPaintTool = ref<UnitPaintTool>('assign');
+
 const viewModeLabel = computed(() => {
   if (viewMode.value === 'infra') return 'Infrastructure';
   if (viewMode.value === 'temp') return 'Temperature';
-  return 'Combo';
+  if (viewMode.value === 'combo') return 'Combo';
+  return 'Units';
 });
 
 // --- editor state ---
@@ -493,6 +629,12 @@ const materialsList = computed(() => {
 });
 
 const simTimeLabel = computed(() => fmtSimTime(simTimeSec.value));
+
+const unitsList = computed(() => units.slice());
+
+const unitOptions = computed(() =>
+  units.map((u) => ({ label: `${u.name} (${u.id})`, value: u.id })),
+);
 
 // --- dialog for materials ---
 const matDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({
@@ -517,6 +659,21 @@ const matForm = reactive<{
   emitTemp: null,
   emitStrength: 0,
 });
+
+const unitDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({
+  open: false,
+  mode: 'add',
+});
+
+const unitForm = reactive<{ id: string; name: string; color: string }>({
+  id: '',
+  name: '',
+  color: '#888888',
+});
+
+function getUnitById(id: string) {
+  return units.find((u) => u.id === id) || null;
+}
 
 function onKeyDown(e: KeyboardEvent) {
   if (e.code === 'Space') spaceDown.value = true;
@@ -671,6 +828,13 @@ function hexToRgb(hex: string): [number, number, number] {
   return [r, g, b];
 }
 
+function getUnitColor(unitId: string | null): [number, number, number] {
+  if (!unitId) return [30, 30, 30]; // unassigned
+  const u = getUnitById(unitId);
+  if (!u) return [120, 120, 120];
+  return hexToRgb(u.color);
+}
+
 // --- rendering ---
 function ensureImageData(w: number, h: number, ctx: CanvasRenderingContext2D) {
   if (!imgData || imgData.width !== w || imgData.height !== h) {
@@ -694,7 +858,11 @@ function render() {
   // compute min/max for temp view
   let mn = minT.value;
   let mx = maxT.value;
-  if (autoScale.value && ++mmCounter % 10 === 0) {
+  if (
+    (viewMode.value === 'temp' || viewMode.value === 'combo') &&
+    autoScale.value &&
+    ++mmCounter % 10 === 0
+  ) {
     const mm = getMinMaxT(world.value);
     mn = mm.min;
     mx = mm.max;
@@ -714,14 +882,9 @@ function render() {
     // base infrastructure
     const [br, bg, bb] = m ? hexToRgb(m.color) : ([80, 80, 80] as const);
 
-    // temperature overlay
-    const t01 = (c.T - mn) / denom;
-    const [tr, tg, tb] = heatColor(t01);
-
     let r = br,
       g = bg,
-      b = bb,
-      a = 255;
+      b = bb;
 
     if (viewMode.value === 'infra') {
       // just infra
@@ -730,22 +893,40 @@ function render() {
       b = bb;
     } else if (viewMode.value === 'temp') {
       // just temp
+      const t01 = (c.T - mn) / denom;
+      const [tr, tg, tb] = heatColor(t01);
       r = tr;
       g = tg;
       b = tb;
-    } else {
-      // combo: alpha blend temp over infra
-      // out = (temp*alpha + base*(255-alpha))/255
+    } else if (viewMode.value === 'combo') {
+      // temp over infra
+      const t01 = (c.T - mn) / denom;
+      const [tr, tg, tb] = heatColor(t01);
       r = Math.round((tr * alpha + br * (255 - alpha)) / 255);
       g = Math.round((tg * alpha + bg * (255 - alpha)) / 255);
       b = Math.round((tb * alpha + bb * (255 - alpha)) / 255);
+    } else if (viewMode.value === 'units') {
+      // units over infra (same alpha slider)
+      const [ur, ug, ub] = getUnitColor(c.unitId);
+
+      // Pokud unitId není, overlay nedávej (nech infra)
+      // (alternativně můžeš i pro null vracet šedou barvu)
+      if (c.unitId) {
+        r = Math.round((ur * alpha + br * (255 - alpha)) / 255);
+        g = Math.round((ug * alpha + bg * (255 - alpha)) / 255);
+        b = Math.round((ub * alpha + bb * (255 - alpha)) / 255);
+      } else {
+        r = br;
+        g = bg;
+        b = bb;
+      }
     }
 
     const p = i * 4;
     img.data[p + 0] = r;
     img.data[p + 1] = g;
     img.data[p + 2] = b;
-    img.data[p + 3] = a;
+    img.data[p + 3] = 255;
   }
 
   ctx.putImageData(img, 0, 0);
@@ -865,6 +1046,14 @@ let lastPaintIndex: number | null = null;
 
 function applyPaint(i: number) {
   if (!world.value) return;
+
+  // pokud jsi v units tabu, maluješ unitId
+  if (tab.value === 'units') {
+    applyUnitPaint(i);
+    return;
+  }
+
+  // jinak default: material paint
   const c = world.value.cells[i];
 
   if (paintTool.value === 'paint') {
@@ -881,6 +1070,32 @@ function applyPaint(i: number) {
 
   if (paintTool.value === 'fill') {
     floodFill(i, c.materialId, selectedMaterialId.value);
+    return;
+  }
+}
+
+function applyUnitPaint(i: number) {
+  if (!world.value) return;
+  const c = world.value.cells[i];
+
+  if (unitPaintTool.value === 'assign') {
+    if (c.unitId !== selectedUnitId.value) c.unitId = selectedUnitId.value;
+    return;
+  }
+
+  if (unitPaintTool.value === 'clear') {
+    if (c.unitId != null) c.unitId = null;
+    return;
+  }
+
+  if (unitPaintTool.value === 'pick') {
+    selectedUnitId.value = c.unitId ?? SHARED_UNIT_ID;
+    return;
+  }
+
+  if (unitPaintTool.value === 'fill') {
+    const to = selectedUnitId.value;
+    floodFillUnit(i, to);
     return;
   }
 }
@@ -908,6 +1123,49 @@ function floodFill(startIndex: number, fromId: string, toId: string) {
     if (x < w - 1) stack.push(xyToN({ x: x + 1, y }, w));
     if (y > 0) stack.push(xyToN({ x, y: y - 1 }, w));
     if (y < h - 1) stack.push(xyToN({ x, y: y + 1 }, w));
+  }
+}
+
+function floodFillUnit(startIndex: number, toUnitId: string | null) {
+  if (!world.value) return;
+
+  const { w, h, cells } = world.value;
+
+  const fromMat = cells[startIndex].materialId;
+  const fromUnit = cells[startIndex].unitId;
+
+  // když filluješ na stejný unitId, nemá to smysl
+  if (fromUnit === toUnitId) return;
+
+  const visited = new Uint8Array(w * h);
+  const stack: number[] = [startIndex];
+
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (visited[n]) continue;
+    visited[n] = 1;
+
+    const c = cells[n];
+
+    // BARIÉRY:
+    // 1) jiný materiál => stop
+    if (c.materialId !== fromMat) continue;
+
+    // 2) jiný unitId (než start) => stop
+    //    => nepřejedeš do jiné jednotky ani do "nepatřící" oblasti
+    if (c.unitId !== fromUnit) continue;
+
+    // teď už víme, že jsme ve stejné místnosti/oblasti => přepiš unitId
+    c.unitId = toUnitId;
+
+    const x = n % w;
+    const y = (n / w) | 0;
+
+    // neighbors4
+    if (x > 0) stack.push(n - 1);
+    if (x < w - 1) stack.push(n + 1);
+    if (y > 0) stack.push(n - w);
+    if (y < h - 1) stack.push(n + w);
   }
 }
 
@@ -984,14 +1242,10 @@ function normalizeId(s: string) {
 }
 
 function saveMaterial() {
-  console.log('SAVE');
   if (!world.value) return;
-
-  console.log(1);
 
   const id = matDialog.mode === 'add' ? normalizeId(matForm.id) : matForm.id;
   if (!id) return;
-  console.log(2);
 
   const m: Material = {
     id,
@@ -1002,12 +1256,10 @@ function saveMaterial() {
     emitTemp: matForm.emitTemp == null ? null : Number(matForm.emitTemp),
     emitStrength: Math.max(0, Number(matForm.emitStrength) || 0),
   };
-  console.log(3);
 
   world.value.materials[id] = m;
   selectedMaterialId.value = id;
 
-  console.log(4);
   matDialog.open = false;
   requestRender();
 }
@@ -1019,6 +1271,73 @@ function removeMaterial(id: string) {
   deleteMaterial(world.value, id, 'air');
   if (selectedMaterialId.value === id) selectedMaterialId.value = 'air';
   requestRender();
+}
+
+// UNIT CRUD
+function openAddUnit() {
+  unitDialog.mode = 'add';
+  unitForm.id = '';
+  unitForm.name = '';
+  unitForm.color = '#888888';
+  unitDialog.open = true;
+}
+
+function openEditUnit(id: string) {
+  const u = getUnitById(id);
+  if (!u) return;
+  unitDialog.mode = 'edit';
+  unitForm.id = u.id;
+  unitForm.name = u.name;
+  unitForm.color = u.color;
+  unitDialog.open = true;
+}
+
+function normalizeUnitId(s: string) {
+  return s
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '')
+    .replace(/[^A-Z0-9_-]/g, '');
+}
+
+function saveUnit() {
+  const id = unitDialog.mode === 'add' ? normalizeUnitId(unitForm.id) : unitForm.id;
+  if (!id) return;
+
+  if (id === SHARED_UNIT_ID && unitDialog.mode === 'add') return; // shared reserved
+
+  const name = unitForm.name.trim() || id;
+  const color = unitForm.color?.trim() || '#888888';
+
+  if (unitDialog.mode === 'add') {
+    if (getUnitById(id)) return;
+    units.push({ id, name, color });
+    selectedUnitId.value = id;
+  } else {
+    const u = getUnitById(id);
+    if (!u) return;
+    u.name = name;
+    u.color = color;
+  }
+
+  unitDialog.open = false;
+  requestRender();
+}
+
+function removeUnit(id: string) {
+  if (!world.value) return;
+  if (id === SHARED_UNIT_ID) return;
+
+  const idx = units.findIndex((u) => u.id === id);
+  if (idx >= 0) units.splice(idx, 1);
+
+  // replace in cells
+  for (const c of world.value.cells) {
+    if (c.unitId === id) c.unitId = null;
+  }
+
+  if (selectedUnitId.value === id) selectedUnitId.value = SHARED_UNIT_ID;
+  requestRender(true);
 }
 
 // react to tool changes (cursor)
