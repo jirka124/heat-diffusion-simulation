@@ -324,9 +324,7 @@
                       </q-item-label>
                       <q-item-label caption>
                         cap={{ m.cap }} • k={{ m.k }}
-                        <span v-if="m.emitTemp != null">
-                          • emit={{ m.emitTemp }}°C @ {{ m.emitStrength }}</span
-                        >
+                        <span v-if="m.emitTemp != null"> • emit={{ m.emitTemp }}°C @</span>
                       </q-item-label>
                     </q-item-section>
 
@@ -583,7 +581,7 @@
           </q-input>
 
           <div class="row q-col-gutter-sm">
-            <div class="col-6">
+            <div class="col-12">
               <q-input
                 v-model.number="matForm.emitTemp"
                 type="number"
@@ -593,19 +591,10 @@
                 clearable
               />
             </div>
-            <div class="col-6">
-              <q-input
-                v-model.number="matForm.emitStrength"
-                type="number"
-                label="emitStrength"
-                dense
-                outlined
-              />
-            </div>
           </div>
 
           <div class="text-caption text-grey-7">
-            Tip: Heater = emitTemp 50–70, emitStrength 1–4 • AC = emitTemp 16–20
+            Tip: Heater = emitTemp 50–70 • AC = emitTemp 16–20
           </div>
         </q-card-section>
 
@@ -998,7 +987,6 @@ const matForm = reactive<{
   k: number;
   color: string;
   emitTemp: number | null;
-  emitStrength: number;
 }>({
   id: '',
   name: '',
@@ -1006,7 +994,6 @@ const matForm = reactive<{
   k: 0.2,
   color: '#888888',
   emitTemp: null,
-  emitStrength: 0,
 });
 
 const unitDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({
@@ -1689,7 +1676,6 @@ function openAdd() {
   matForm.k = 0.2;
   matForm.color = '#888888';
   matForm.emitTemp = null;
-  matForm.emitStrength = 0;
   matDialog.open = true;
 }
 
@@ -1707,7 +1693,6 @@ function openEdit(id: string) {
   matForm.k = m.k;
   matForm.color = m.color;
   matForm.emitTemp = m.emitTemp;
-  matForm.emitStrength = m.emitStrength;
   matDialog.open = true;
 }
 
@@ -1733,7 +1718,6 @@ function saveMaterial() {
     k: Math.max(0, Number(matForm.k) || 0),
     color: matForm.color?.trim() || '#888888',
     emitTemp: matForm.emitTemp == null ? null : Number(matForm.emitTemp),
-    emitStrength: Math.max(0, Number(matForm.emitStrength) || 0),
   };
 
   world.value.materials[id] = m;

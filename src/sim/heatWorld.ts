@@ -15,10 +15,6 @@ export type Material = {
   // If set, each step will relax the cell temperature toward emitTemp.
   // Positive = heating, negative (or just lower target) = cooling.
   emitTemp: number | null;
-
-  // how strongly the cell is driven toward emitTemp per second
-  // (0 = off, typical 0.5..5 depending on dt and stability you want)
-  emitStrength: number;
 };
 
 export type Cell = {
@@ -62,7 +58,6 @@ export function defaultMaterials(): Record<string, Material> {
     k: 1.0,
     color: '#2D3A4A',
     emitTemp: null,
-    emitStrength: 0,
   };
 
   const brick: Material = {
@@ -72,7 +67,6 @@ export function defaultMaterials(): Record<string, Material> {
     k: 0.25,
     color: '#7B4E2B',
     emitTemp: null,
-    emitStrength: 0,
   };
 
   const concrete: Material = {
@@ -82,7 +76,6 @@ export function defaultMaterials(): Record<string, Material> {
     k: 0.45,
     color: '#6E7076',
     emitTemp: null,
-    emitStrength: 0,
   };
 
   const insulation: Material = {
@@ -92,7 +85,6 @@ export function defaultMaterials(): Record<string, Material> {
     k: 0.03,
     color: '#D8D3A8',
     emitTemp: null,
-    emitStrength: 0,
   };
 
   const windowMat: Material = {
@@ -102,7 +94,6 @@ export function defaultMaterials(): Record<string, Material> {
     k: 1.6,
     color: '#7FB3D5',
     emitTemp: null,
-    emitStrength: 0,
   };
 
   // Heater/AC as materials (targets)
@@ -113,7 +104,6 @@ export function defaultMaterials(): Record<string, Material> {
     k: 1.2,
     color: '#C0392B',
     emitTemp: 55, // target temperature
-    emitStrength: 2.0, // drive strength
   };
 
   const ac: Material = {
@@ -123,7 +113,6 @@ export function defaultMaterials(): Record<string, Material> {
     k: 1.2,
     color: '#1F7AE0',
     emitTemp: 16,
-    emitStrength: 2.0,
   };
 
   // Outside boundary as a "material" is optional; you can just paint it on edges.
@@ -134,7 +123,6 @@ export function defaultMaterials(): Record<string, Material> {
     k: 1.0,
     color: '#0B1B2B',
     emitTemp: 0, // behaves like fixed outside temperature
-    emitStrength: 5.0,
   };
 
   return {
@@ -241,15 +229,12 @@ export function stepWorld(world: World, dt: number) {
     c.T += dQ[i] / cap;
   }
 
-  // apply emitters (heater / AC / outside)
-  // relaxation: T += (emitTemp - T) * (1 - exp(-strength*dt))
+  // hard clamp fixed temps
   for (let i = 0; i < n; i++) {
     const c = cells[i];
     const m = materials[c.materialId];
-    if (!m || m.emitTemp == null || m.emitStrength <= 0) continue;
-
-    const k = 1 - Math.exp(-m.emitStrength * dt); // stable blending factor
-    c.T = c.T + (m.emitTemp - c.T) * k;
+    if (!m || m.emitTemp == null) continue;
+    c.T = m.emitTemp;
   }
 }
 
