@@ -26,7 +26,7 @@
             <q-tab-panels v-model="tab" animated>
               <!-- SIM TAB -->
               <q-tab-panel name="sim" class="q-pa-none q-pt-md">
-                <div v-if="tick === 0">
+                <div v-if="!locked">
                   <div class="row q-col-gutter-sm">
                     <div class="col-6">
                       <q-input v-model.number="cfg.w" type="number" label="Grid W" dense outlined />
@@ -226,6 +226,7 @@
                     { label: 'Pick', value: 'pick' },
                     { label: 'Fill', value: 'fill' },
                   ]"
+                  :disable="locked"
                 />
 
                 <q-select
@@ -236,6 +237,7 @@
                   outlined
                   emit-value
                   map-options
+                  :disable="locked"
                 />
 
                 <div class="text-caption text-grey-7 q-mt-xs">
@@ -254,6 +256,7 @@
                     color="primary"
                     icon="add"
                     label="Add"
+                    :disable="locked"
                     @click="openAdd()"
                   />
                 </div>
@@ -262,9 +265,9 @@
                   <q-item
                     v-for="m in materialsList"
                     :key="m.id"
-                    clickable
+                    :clickable="!locked"
                     v-ripple
-                    @click="selectedMaterialId = m.id"
+                    @click="!locked && (selectedMaterialId = m.id)"
                   >
                     <q-item-section avatar>
                       <div class="mat-swatch" :style="{ background: m.color }" />
@@ -284,13 +287,19 @@
                     </q-item-section>
 
                     <q-item-section side>
-                      <q-btn flat dense icon="edit" @click.stop="openEdit(m.id)" />
+                      <q-btn
+                        flat
+                        dense
+                        icon="edit"
+                        :disable="locked"
+                        @click.stop="openEdit(m.id)"
+                      />
                       <q-btn
                         flat
                         dense
                         icon="delete"
                         color="negative"
-                        :disable="m.id === 'air'"
+                        :disable="locked || m.id === 'air'"
                         @click.stop="removeMaterial(m.id)"
                       />
                     </q-item-section>
@@ -312,6 +321,7 @@
                     color="primary"
                     icon="add"
                     label="Add"
+                    :disable="locked"
                     @click="openAddUnit()"
                   />
                 </div>
@@ -325,6 +335,7 @@
                   emit-value
                   map-options
                   class="q-mt-sm"
+                  :disable="locked"
                 />
 
                 <q-btn-toggle
@@ -332,6 +343,7 @@
                   spread
                   unelevated
                   class="q-mt-sm"
+                  :disable="locked"
                   :options="[
                     { label: 'Assign', value: 'assign' },
                     { label: 'Pick', value: 'pick' },
@@ -344,9 +356,9 @@
                   <q-item
                     v-for="u in unitsList"
                     :key="u.id"
-                    clickable
+                    :clickable="!locked"
                     v-ripple
-                    @click="selectedUnitId = u.id"
+                    @click="!locked && (selectedUnitId = u.id)"
                   >
                     <q-item-section avatar>
                       <div class="mat-swatch" :style="{ background: u.color }" />
@@ -360,13 +372,19 @@
                     </q-item-section>
 
                     <q-item-section side>
-                      <q-btn flat dense icon="edit" @click.stop="openEditUnit(u.id)" />
+                      <q-btn
+                        flat
+                        dense
+                        icon="edit"
+                        :disable="locked"
+                        @click.stop="openEditUnit(u.id)"
+                      />
                       <q-btn
                         flat
                         dense
                         icon="delete"
                         color="negative"
-                        :disable="u.id === SHARED_UNIT_ID"
+                        :disable="locked || u.id === SHARED_UNIT_ID"
                         @click.stop="removeUnit(u.id)"
                       />
                     </q-item-section>
@@ -781,6 +799,8 @@ const spaceDown = ref(false);
 let panning = false;
 let panStart = { x: 0, y: 0, sl: 0, st: 0 };
 
+const locked = computed(() => tick.value > 0);
+
 type TempRange = { min: number; max: number };
 
 type UnitParams =
@@ -904,6 +924,10 @@ const simUnitRows = computed(() => {
   });
 });
 
+const lockReason = computed(() =>
+  locked.value ? 'Locked because simulation already started. Use Setup/Reset to edit.' : '',
+);
+
 // --- dialog for materials ---
 const matDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({
   open: false,
@@ -948,6 +972,10 @@ const unitForm = reactive({
   awayMin: 16,
   awayMax: 18,
 });
+
+function guardUnlocked(): boolean {
+  return !locked.value;
+}
 
 function updateUnitStats() {
   const wld = world.value;
@@ -1408,6 +1436,7 @@ let lastPaintIndex: number | null = null;
 
 function applyPaint(i: number) {
   if (!world.value) return;
+  if (locked.value) return;
 
   // pokud jsi v units tabu, maluješ unitId
   if (tab.value === 'units') {
@@ -1438,6 +1467,8 @@ function applyPaint(i: number) {
 
 function applyUnitPaint(i: number) {
   if (!world.value) return;
+  if (locked.value) return;
+
   const c = world.value.cells[i];
 
   if (unitPaintTool.value === 'assign') {
@@ -1465,6 +1496,7 @@ function applyUnitPaint(i: number) {
 function floodFill(startIndex: number, fromId: string, toId: string) {
   if (!world.value) return;
   if (fromId === toId) return;
+  if (locked.value) return;
 
   const { w, h, cells } = world.value;
   const visited = new Uint8Array(w * h);
@@ -1490,6 +1522,7 @@ function floodFill(startIndex: number, fromId: string, toId: string) {
 
 function floodFillUnit(startIndex: number, toUnitId: string | null) {
   if (!world.value) return;
+  if (locked.value) return;
 
   const { w, h, cells } = world.value;
 
@@ -1534,6 +1567,7 @@ function floodFillUnit(startIndex: number, toUnitId: string | null) {
 function onPointerDown(evt: PointerEvent) {
   if (!world.value) return;
   if (spaceDown.value) return;
+  if (locked.value) return;
 
   (evt.currentTarget as HTMLCanvasElement).setPointerCapture(evt.pointerId);
   painting = true;
@@ -1548,6 +1582,7 @@ function onPointerDown(evt: PointerEvent) {
 
 function onPointerMove(evt: PointerEvent) {
   if (!painting || !world.value) return;
+  if (locked.value) return;
 
   // pick tool should not "drag pick" in a noisy way
   if (paintTool.value === 'pick') return;
@@ -1568,6 +1603,8 @@ function onPointerUp() {
 
 // --- materials CRUD ---
 function openAdd() {
+  if (locked.value) return;
+
   matDialog.mode = 'add';
   matForm.id = '';
   matForm.name = '';
@@ -1580,6 +1617,8 @@ function openAdd() {
 }
 
 function openEdit(id: string) {
+  if (locked.value) return;
+
   if (!world.value) return;
   const m = world.value.materials[id];
   if (!m) return;
@@ -1604,6 +1643,7 @@ function normalizeId(s: string) {
 }
 
 function saveMaterial() {
+  if (locked.value) return;
   if (!world.value) return;
 
   const id = matDialog.mode === 'add' ? normalizeId(matForm.id) : matForm.id;
@@ -1627,6 +1667,7 @@ function saveMaterial() {
 }
 
 function removeMaterial(id: string) {
+  if (locked.value) return;
   if (!world.value) return;
   if (id === 'air') return;
 
@@ -1637,13 +1678,16 @@ function removeMaterial(id: string) {
 
 // UNIT CRUD
 function openAddUnit() {
+  if (locked.value) return;
+
   unitDialog.mode = 'add';
   unitForm.id = '';
   unitForm.name = '';
   unitForm.color = '#888888';
 
   // defaults pro nový byt
-  unitForm.homeHoursPerDay = 14;
+  unitForm.homeFromMin = 800;
+  unitForm.homeToMin = 240;
   unitForm.homeMin = 20;
   unitForm.homeMax = 22;
   unitForm.awayMin = 16;
@@ -1657,6 +1701,8 @@ function openAddUnit() {
 }
 
 function openEditUnit(id: string) {
+  if (locked.value) return;
+
   const u = getUnitById(id);
   if (!u) return;
   unitDialog.mode = 'edit';
@@ -1688,6 +1734,8 @@ function normalizeUnitId(s: string) {
 }
 
 function saveUnit() {
+  if (locked.value) return;
+
   const id = unitDialog.mode === 'add' ? normalizeUnitId(unitForm.id) : unitForm.id;
   if (!id) return;
 
@@ -1726,6 +1774,8 @@ function saveUnit() {
 }
 
 function removeUnit(id: string) {
+  if (locked.value) return;
+
   if (!world.value) return;
   if (id === SHARED_UNIT_ID) return;
 
