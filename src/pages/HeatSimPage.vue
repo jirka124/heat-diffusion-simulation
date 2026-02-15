@@ -117,6 +117,9 @@
 
                 <div class="text-body2">
                   <div>
+                    Time: <b>{{ simTimeLabel }}</b>
+                  </div>
+                  <div>
                     Tick: <b>{{ tick }}</b>
                   </div>
                   <div>
@@ -435,6 +438,7 @@ const rafId = ref<number | null>(null);
 
 let lastTs = 0;
 let simAccMs = 0;
+const simTimeSec = ref(0);
 const fps = ref(0); // měřený FPS (render)
 
 let needsRender = false;
@@ -487,6 +491,8 @@ const materialsList = computed(() => {
   if (!world.value) return [];
   return Object.values(world.value.materials).sort((a, b) => a.name.localeCompare(b.name));
 });
+
+const simTimeLabel = computed(() => fmtSimTime(simTimeSec.value));
 
 // --- dialog for materials ---
 const matDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({
@@ -600,6 +606,20 @@ function onWheel(evt: WheelEvent) {
   const dir = evt.deltaY < 0 ? 1 : -1;
   const factor = dir > 0 ? zoomStep : 1 / zoomStep;
   zoomAt(evt.clientX, evt.clientY, scale.value * factor);
+}
+
+function fmtSimTime(secTotal: number) {
+  const sec = Math.max(0, Math.floor(secTotal));
+  const days = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+
+  // "Day 12 03:05:09" / "03:05:09"
+  const hh = String(h).padStart(2, '0');
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return days > 0 ? `Day ${days} ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
 }
 
 // --- canvas sizing ---
@@ -750,6 +770,7 @@ function setup() {
   selectedMaterialId.value = 'air';
 
   tick.value = 0;
+  simTimeSec.value = 0;
   setupCanvasSize();
 
   const mm = getMinMaxT(world.value);
@@ -763,6 +784,7 @@ function resetTemps() {
   if (!world.value) return;
   for (const c of world.value.cells) c.T = cfg.initTemp;
   tick.value = 0;
+  simTimeSec.value = 0;
   requestRender(true);
 }
 
@@ -770,6 +792,7 @@ function stepOnce() {
   if (!world.value) return;
   stepWorld(world.value, cfg.dt);
   tick.value++;
+  simTimeSec.value += cfg.dt;
   requestRender(true);
 }
 
@@ -789,6 +812,7 @@ function loop(ts: number) {
     if (simAccMs >= stepMs) {
       stepWorld(world.value, cfg.dt);
       tick.value += 1;
+      simTimeSec.value += cfg.dt;
       needsRender = true;
 
       simAccMs = 0;
