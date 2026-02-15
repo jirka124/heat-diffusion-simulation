@@ -26,53 +26,130 @@
             <q-tab-panels v-model="tab" animated>
               <!-- SIM TAB -->
               <q-tab-panel name="sim" class="q-pa-none q-pt-md">
-                <div class="row q-col-gutter-sm">
-                  <div class="col-6">
-                    <q-input v-model.number="cfg.w" type="number" label="Grid W" dense outlined />
+                <div v-if="tick === 0">
+                  <div class="row q-col-gutter-sm">
+                    <div class="col-6">
+                      <q-input v-model.number="cfg.w" type="number" label="Grid W" dense outlined />
+                    </div>
+                    <div class="col-6">
+                      <q-input v-model.number="cfg.h" type="number" label="Grid H" dense outlined />
+                    </div>
                   </div>
-                  <div class="col-6">
-                    <q-input v-model.number="cfg.h" type="number" label="Grid H" dense outlined />
+
+                  <q-input
+                    v-model.number="cfg.initTemp"
+                    type="number"
+                    label="Initial Temp"
+                    dense
+                    outlined
+                  />
+                  <q-input
+                    v-model.number="cfg.dt"
+                    type="number"
+                    label="dt (time step)"
+                    dense
+                    outlined
+                  />
+                  <div class="col-12">
+                    <q-input
+                      v-model.number="cfg.startDayTimeMin"
+                      type="number"
+                      label="Day time offset (minutes)"
+                      dense
+                      outlined
+                      :min="0"
+                      :max="60 * 24 - 1"
+                    />
+                    <div class="row q-col-gutter-sm">
+                      <div class="col-6">
+                        <q-input
+                          v-model.number="cfg.simTicksPerSec"
+                          type="number"
+                          label="Model Speed (tics/sec)"
+                          dense
+                          outlined
+                          :min="0.1"
+                          :max="1000"
+                        />
+                      </div>
+
+                      <div class="col-6">
+                        <q-input
+                          v-model.number="cfg.renderFpsLimit"
+                          type="number"
+                          label="Render FPS limit"
+                          dense
+                          outlined
+                          :min="1"
+                          :max="60"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <q-input
-                  v-model.number="cfg.initTemp"
-                  type="number"
-                  label="Initial Temp"
-                  dense
-                  outlined
-                />
-                <q-input
-                  v-model.number="cfg.dt"
-                  type="number"
-                  label="dt (time step)"
-                  dense
-                  outlined
-                />
-                <div class="row q-col-gutter-sm">
-                  <div class="col-6">
-                    <q-input
-                      v-model.number="cfg.simTicksPerSec"
-                      type="number"
-                      label="Model Speed (tics/sec)"
-                      dense
-                      outlined
-                      :min="0.1"
-                      :max="1000"
-                    />
+                <div v-else>
+                  <div class="text-subtitle2">Runtime overview</div>
+                  <div class="text-caption text-grey-7 q-mb-sm">
+                    Day <b>{{ dayIndex }}</b> • Time <b>{{ dayTimeLabel }}</b>
                   </div>
 
-                  <div class="col-6">
-                    <q-input
-                      v-model.number="cfg.renderFpsLimit"
-                      type="number"
-                      label="Render FPS limit"
-                      dense
-                      outlined
-                      :min="1"
-                      :max="60"
-                    />
-                  </div>
+                  <q-list bordered separator class="q-mt-sm">
+                    <q-item v-for="r in simUnitRows" :key="r.id">
+                      <q-item-section avatar>
+                        <div class="mat-swatch" :style="{ background: r.color }" />
+                      </q-item-section>
+
+                      <q-item-section>
+                        <q-item-label>
+                          {{ r.name }}
+                          <span class="text-caption text-grey-7">({{ r.id }})</span>
+                        </q-item-label>
+
+                        <q-item-label caption>
+                          Target: <b>{{ r.activeRange }}</b>
+                          <span v-if="r.kind === 'unit'">
+                            • Schedule: {{ r.schedule }} • <b>{{ r.home ? 'HOME' : 'AWAY' }}</b>
+                          </span>
+                          <span v-else> • Shared </span>
+                        </q-item-label>
+                      </q-item-section>
+
+                      <q-item-section side>
+                        <div class="text-caption text-grey-7" style="text-align: right">
+                          Avg T:
+                          <b>{{ r.avgT == null ? '—' : r.avgT.toFixed(1) + '°C' }}</b>
+                        </div>
+                        <div class="text-caption text-grey-7" style="text-align: right">
+                          Cells: <b>{{ r.cells }}</b>
+                        </div>
+                      </q-item-section>
+                    </q-item>
+
+                    <q-separator />
+
+                    <q-item>
+                      <q-item-section>
+                        <q-item-label>Unassigned</q-item-label>
+                        <q-item-label caption>Cells with unitId = null</q-item-label>
+                      </q-item-section>
+                      <q-item-section side>
+                        <div class="text-caption text-grey-7" style="text-align: right">
+                          Avg T:
+                          <b>
+                            {{
+                              unassignedStat.avgT == null
+                                ? '—'
+                                : unassignedStat.avgT.toFixed(1) + '°C'
+                            }}
+                          </b>
+                        </div>
+                        <div class="text-caption text-grey-7" style="text-align: right">
+                          Cells: <b>{{ unassignedStat.count }}</b>
+                        </div>
+                      </q-item-section>
+                    </q-item>
+                  </q-list>
                 </div>
 
                 <div class="row q-col-gutter-sm q-mt-sm">
@@ -119,6 +196,9 @@
                 <div class="text-body2">
                   <div>
                     Time: <b>{{ simTimeLabel }}</b>
+                  </div>
+                  <div>
+                    Day: <b>{{ dayIndex }}</b> • Day time: <b>{{ dayTimeLabel }}</b>
                   </div>
                   <div>
                     Tick: <b>{{ tick }}</b>
@@ -507,6 +587,119 @@
               </q-icon>
             </template>
           </q-input>
+
+          <q-separator class="q-my-sm" />
+
+          <div class="text-subtitle2">Behavior</div>
+
+          <!-- Shared -->
+          <div
+            v-if="
+              unitForm.id === SHARED_UNIT_ID ||
+              (unitDialog.mode === 'edit' && unitForm.id === SHARED_UNIT_ID)
+            "
+          >
+            <div class="text-caption text-grey-7 q-mb-xs">
+              Shared space: comfy temperature range
+            </div>
+
+            <div class="row q-col-gutter-sm">
+              <div class="col-6">
+                <q-input
+                  v-model.number="unitForm.sharedMin"
+                  type="number"
+                  label="Comfy min (°C)"
+                  dense
+                  outlined
+                />
+              </div>
+              <div class="col-6">
+                <q-input
+                  v-model.number="unitForm.sharedMax"
+                  type="number"
+                  label="Comfy max (°C)"
+                  dense
+                  outlined
+                />
+              </div>
+            </div>
+          </div>
+
+          <!-- Normal unit -->
+          <div v-else>
+            <div class="text-caption text-grey-7 q-mb-xs">Home schedule (daily)</div>
+
+            <q-slider
+              v-model="unitForm.homeFromMin"
+              :min="0"
+              :max="1439"
+              :step="15"
+              label
+              label-always
+            />
+            <div class="text-caption text-grey-7 q-mb-sm">
+              Home from: <b>{{ fmtHm(unitForm.homeFromMin) }}</b>
+            </div>
+
+            <q-slider
+              v-model="unitForm.homeToMin"
+              :min="0"
+              :max="1439"
+              :step="15"
+              label
+              label-always
+            />
+            <div class="text-caption text-grey-7 q-mb-sm">
+              Home to: <b>{{ fmtHm(unitForm.homeToMin) }}</b>
+              <span v-if="unitForm.homeFromMin > unitForm.homeToMin" class="text-grey-6">
+                (wraps over midnight)
+              </span>
+            </div>
+
+            <div class="text-caption text-grey-7 q-mb-xs">When home</div>
+            <div class="row q-col-gutter-sm">
+              <div class="col-6">
+                <q-input
+                  v-model.number="unitForm.homeMin"
+                  type="number"
+                  label="Home min (°C)"
+                  dense
+                  outlined
+                />
+              </div>
+              <div class="col-6">
+                <q-input
+                  v-model.number="unitForm.homeMax"
+                  type="number"
+                  label="Home max (°C)"
+                  dense
+                  outlined
+                />
+              </div>
+            </div>
+
+            <div class="text-caption text-grey-7 q-mt-sm q-mb-xs">When away</div>
+            <div class="row q-col-gutter-sm">
+              <div class="col-6">
+                <q-input
+                  v-model.number="unitForm.awayMin"
+                  type="number"
+                  label="Away min (°C)"
+                  dense
+                  outlined
+                />
+              </div>
+              <div class="col-6">
+                <q-input
+                  v-model.number="unitForm.awayMax"
+                  type="number"
+                  label="Away max (°C)"
+                  dense
+                  outlined
+                />
+              </div>
+            </div>
+          </div>
         </q-card-section>
 
         <q-separator />
@@ -548,6 +741,7 @@ const cfg = reactive({
   dt: 1,
   simTicksPerSec: 200,
   renderFpsLimit: 12,
+  startDayTimeMin: 0,
 });
 
 const world = ref<World | null>(null);
@@ -587,14 +781,53 @@ const spaceDown = ref(false);
 let panning = false;
 let panStart = { x: 0, y: 0, sl: 0, st: 0 };
 
-type UnitDef = { id: string; name: string; color: string };
+type TempRange = { min: number; max: number };
+
+type UnitParams =
+  | { kind: 'shared'; comfy: TempRange }
+  | {
+      kind: 'unit';
+      homeFromMin: number; // 0..1439
+      homeToMin: number; // 0..1439
+      home: TempRange;
+      away: TempRange;
+    };
+
+type UnitDef = { id: string; name: string; color: string; params: UnitParams };
 
 const SHARED_UNIT_ID = 'shared';
 
 const units = reactive<UnitDef[]>([
-  { id: SHARED_UNIT_ID, name: 'Shared space', color: '#9E9E9E' },
-  { id: 'A', name: 'Unit A', color: '#8E44AD' },
-  { id: 'B', name: 'Unit B', color: '#27AE60' },
+  {
+    id: SHARED_UNIT_ID,
+    name: 'Shared space',
+    color: '#9E9E9E',
+    params: { kind: 'shared', comfy: { min: 14, max: 22 } },
+  },
+  {
+    id: 'A',
+    name: 'Unit A',
+    color: '#8E44AD',
+    params: {
+      kind: 'unit',
+      homeFromMin: 22 * 60,
+      homeToMin: 6 * 60,
+      home: { min: 20, max: 22 },
+      away: { min: 16, max: 18 },
+    },
+  },
+  {
+    id: 'B',
+    name: 'Unit B',
+    color: '#27AE60',
+    params: {
+      kind: 'unit',
+      homeFromMin: 16 * 60,
+      homeToMin: 8 * 60,
+      home: { min: 20, max: 22 },
+      away: { min: 15, max: 17 },
+    },
+  },
 ]);
 
 const selectedUnitId = ref<UnitDef['id']>(SHARED_UNIT_ID);
@@ -614,6 +847,10 @@ type PaintTool = 'paint' | 'pick' | 'fill';
 const paintTool = ref<PaintTool>('paint');
 
 const selectedMaterialId = ref('air');
+
+type UnitStat = { count: number; avgT: number | null };
+const unitStats = ref<Record<string, UnitStat>>({});
+const unassignedStat = ref<UnitStat>({ count: 0, avgT: null });
 
 const materialOptions = computed(() => {
   if (!world.value) return [];
@@ -635,6 +872,37 @@ const unitsList = computed(() => units.slice());
 const unitOptions = computed(() =>
   units.map((u) => ({ label: `${u.name} (${u.id})`, value: u.id })),
 );
+
+const dayIndex = computed(() => Math.floor(simTimeSec.value / 86400));
+
+const secOfDay = computed(() => {
+  const start = (cfg.startDayTimeMin ?? 0) * 60;
+  const s = (simTimeSec.value + start) % 86400;
+  return s < 0 ? s + 86400 : s;
+});
+
+const dayTimeLabel = computed(() => fmtHmsFromSec(secOfDay.value));
+
+const simUnitRows = computed(() => {
+  const sDay = secOfDay.value;
+  return units.map((u) => {
+    const active = getActiveRange(u, sDay);
+    const home = u.params.kind === 'unit' ? isHomeNow(u, sDay) : null;
+
+    const st = unitStats.value[u.id] ?? { count: 0, avgT: null };
+    return {
+      id: u.id,
+      name: u.name,
+      color: u.color,
+      kind: u.params.kind,
+      schedule: fmtSchedule(u),
+      home,
+      activeRange: fmtRange(active),
+      avgT: st.avgT,
+      cells: st.count,
+    };
+  });
+});
 
 // --- dialog for materials ---
 const matDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({
@@ -665,11 +933,53 @@ const unitDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({
   mode: 'add',
 });
 
-const unitForm = reactive<{ id: string; name: string; color: string }>({
+const unitForm = reactive({
   id: '',
   name: '',
   color: '#888888',
+
+  sharedMin: 14,
+  sharedMax: 22,
+
+  homeFromMin: 22 * 60,
+  homeToMin: 6 * 60,
+  homeMin: 20,
+  homeMax: 22,
+  awayMin: 16,
+  awayMax: 18,
 });
+
+function updateUnitStats() {
+  const wld = world.value;
+  if (!wld) return;
+
+  const sum: Record<string, number> = {};
+  const cnt: Record<string, number> = {};
+
+  let sumNull = 0;
+  let cntNull = 0;
+
+  for (const c of wld.cells) {
+    const id = c.unitId;
+    if (!id) {
+      sumNull += c.T;
+      cntNull += 1;
+      continue;
+    }
+    sum[id] = (sum[id] ?? 0) + c.T;
+    cnt[id] = (cnt[id] ?? 0) + 1;
+  }
+
+  const out: Record<string, UnitStat> = {};
+  for (const u of units) {
+    const c = cnt[u.id] ?? 0;
+    const s = sum[u.id] ?? 0;
+    out[u.id] = { count: c, avgT: c > 0 ? s / c : null };
+  }
+
+  unitStats.value = out;
+  unassignedStat.value = { count: cntNull, avgT: cntNull > 0 ? sumNull / cntNull : null };
+}
 
 function getUnitById(id: string) {
   return units.find((u) => u.id === id) || null;
@@ -779,6 +1089,21 @@ function fmtSimTime(secTotal: number) {
   return days > 0 ? `Day ${days} ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
 }
 
+function fmtHm(minOfDay: number) {
+  const m = ((Math.floor(minOfDay) % 1440) + 1440) % 1440;
+  const hh = String(Math.floor(m / 60)).padStart(2, '0');
+  const mm = String(m % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+function fmtHmsFromSec(secOfDay: number) {
+  const s = ((Math.floor(secOfDay) % 86400) + 86400) % 86400;
+  const hh = String(Math.floor(s / 3600)).padStart(2, '0');
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
 // --- canvas sizing ---
 function setupCanvasSize() {
   if (!canvasEl.value || !contentEl.value || !world.value) return;
@@ -794,6 +1119,13 @@ function setupCanvasSize() {
 // --- color helpers ---
 function clamp01(x: number) {
   return Math.max(0, Math.min(1, x));
+}
+
+function normRange(min: number, max: number): TempRange {
+  const a = Number(min);
+  const b = Number(max);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return { min: 0, max: 0 };
+  return a <= b ? { min: a, max: b } : { min: b, max: a };
 }
 
 // temperature colormap: blue -> cyan -> yellow -> red
@@ -833,6 +1165,32 @@ function getUnitColor(unitId: string | null): [number, number, number] {
   const u = getUnitById(unitId);
   if (!u) return [120, 120, 120];
   return hexToRgb(u.color);
+}
+
+function isHomeNow(u: UnitDef, secOfDay: number) {
+  if (u.params.kind !== 'unit') return false;
+
+  const tMin = Math.floor(secOfDay / 60) % 1440;
+  const from = clamp(u.params.homeFromMin, 0, 1439);
+  const to = clamp(u.params.homeToMin, 0, 1439);
+
+  if (from === to) return true; // 24/7 home
+  if (from < to) return tMin >= from && tMin < to;
+  return tMin >= from || tMin < to; // wrap over midnight
+}
+
+function getActiveRange(u: UnitDef, secOfDay: number): TempRange {
+  if (u.params.kind === 'shared') return u.params.comfy;
+  return isHomeNow(u, secOfDay) ? u.params.home : u.params.away;
+}
+
+function fmtRange(r: TempRange) {
+  return `${r.min}–${r.max}°C`;
+}
+
+function fmtSchedule(u: UnitDef) {
+  if (u.params.kind !== 'unit') return '—';
+  return `${fmtHm(u.params.homeFromMin)}–${fmtHm(u.params.homeToMin)}`;
 }
 
 // --- rendering ---
@@ -958,6 +1316,7 @@ function setup() {
   minT.value = mm.min;
   maxT.value = mm.max;
 
+  updateUnitStats();
   requestRender(true);
 }
 
@@ -966,6 +1325,7 @@ function resetTemps() {
   for (const c of world.value.cells) c.T = cfg.initTemp;
   tick.value = 0;
   simTimeSec.value = 0;
+  updateUnitStats();
   requestRender(true);
 }
 
@@ -974,6 +1334,7 @@ function stepOnce() {
   stepWorld(world.value, cfg.dt);
   tick.value++;
   simTimeSec.value += cfg.dt;
+  updateUnitStats();
   requestRender(true);
 }
 
@@ -994,6 +1355,7 @@ function loop(ts: number) {
       stepWorld(world.value, cfg.dt);
       tick.value += 1;
       simTimeSec.value += cfg.dt;
+      updateUnitStats();
       needsRender = true;
 
       simAccMs = 0;
@@ -1279,6 +1641,18 @@ function openAddUnit() {
   unitForm.id = '';
   unitForm.name = '';
   unitForm.color = '#888888';
+
+  // defaults pro nový byt
+  unitForm.homeHoursPerDay = 14;
+  unitForm.homeMin = 20;
+  unitForm.homeMax = 22;
+  unitForm.awayMin = 16;
+  unitForm.awayMax = 18;
+
+  // shared defaults (pro jistotu)
+  unitForm.sharedMin = 14;
+  unitForm.sharedMax = 22;
+
   unitDialog.open = true;
 }
 
@@ -1289,6 +1663,19 @@ function openEditUnit(id: string) {
   unitForm.id = u.id;
   unitForm.name = u.name;
   unitForm.color = u.color;
+
+  if (u.params.kind === 'shared') {
+    unitForm.sharedMin = u.params.comfy.min;
+    unitForm.sharedMax = u.params.comfy.max;
+  } else {
+    unitForm.homeFromMin = u.params.homeFromMin;
+    unitForm.homeToMin = u.params.homeToMin;
+    unitForm.homeMin = u.params.home.min;
+    unitForm.homeMax = u.params.home.max;
+    unitForm.awayMin = u.params.away.min;
+    unitForm.awayMax = u.params.away.max;
+  }
+
   unitDialog.open = true;
 }
 
@@ -1304,20 +1691,34 @@ function saveUnit() {
   const id = unitDialog.mode === 'add' ? normalizeUnitId(unitForm.id) : unitForm.id;
   if (!id) return;
 
-  if (id === SHARED_UNIT_ID && unitDialog.mode === 'add') return; // shared reserved
+  // shared je rezervovaný (jen edit existujícího)
+  if (id === SHARED_UNIT_ID && unitDialog.mode === 'add') return;
 
   const name = unitForm.name.trim() || id;
   const color = unitForm.color?.trim() || '#888888';
 
+  const isShared = id === SHARED_UNIT_ID;
+
+  const params: UnitParams = isShared
+    ? { kind: 'shared', comfy: normRange(unitForm.sharedMin, unitForm.sharedMax) }
+    : {
+        kind: 'unit',
+        homeFromMin: clamp(Math.floor(Number(unitForm.homeFromMin) || 0), 0, 1439),
+        homeToMin: clamp(Math.floor(Number(unitForm.homeToMin) || 0), 0, 1439),
+        home: normRange(unitForm.homeMin, unitForm.homeMax),
+        away: normRange(unitForm.awayMin, unitForm.awayMax),
+      };
+
   if (unitDialog.mode === 'add') {
     if (getUnitById(id)) return;
-    units.push({ id, name, color });
+    units.push({ id, name, color, params });
     selectedUnitId.value = id;
   } else {
     const u = getUnitById(id);
     if (!u) return;
     u.name = name;
     u.color = color;
+    u.params = params;
   }
 
   unitDialog.open = false;
