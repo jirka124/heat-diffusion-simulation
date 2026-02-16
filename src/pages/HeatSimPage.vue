@@ -139,7 +139,7 @@
                   </div>
 
                   <q-list bordered separator class="q-mt-sm">
-                    <q-item v-for="r in simUnitRows" :key="r.id">
+                    <q-item v-for="r in runtimeUnitRows" :key="r.id">
                       <q-item-section avatar>
                         <div class="mat-swatch" :style="{ background: r.color }" />
                       </q-item-section>
@@ -156,6 +156,10 @@
                             • Schedule: {{ r.schedule }} • <b>{{ r.home ? 'HOME' : 'AWAY' }}</b>
                           </span>
                           <span v-else> • Shared </span>
+
+                          <span v-if="r.heaters > 0">
+                            • Heaters: <b>{{ r.heaters }}</b></span
+                          >
                         </q-item-label>
                       </q-item-section>
 
@@ -166,30 +170,6 @@
                         </div>
                         <div class="text-caption text-grey-7" style="text-align: right">
                           Cells: <b>{{ r.cells }}</b>
-                        </div>
-                      </q-item-section>
-                    </q-item>
-
-                    <q-separator />
-
-                    <q-item>
-                      <q-item-section>
-                        <q-item-label>Unassigned</q-item-label>
-                        <q-item-label caption>Cells with unitId = null</q-item-label>
-                      </q-item-section>
-                      <q-item-section side>
-                        <div class="text-caption text-grey-7" style="text-align: right">
-                          Avg T:
-                          <b>
-                            {{
-                              unassignedStat.avgT == null
-                                ? '—'
-                                : unassignedStat.avgT.toFixed(1) + '°C'
-                            }}
-                          </b>
-                        </div>
-                        <div class="text-caption text-grey-7" style="text-align: right">
-                          Cells: <b>{{ unassignedStat.count }}</b>
                         </div>
                       </q-item-section>
                     </q-item>
@@ -876,10 +856,6 @@ const paintTool = ref<PaintTool>('paint');
 
 const selectedMaterialId = ref('air');
 
-type UnitStat = { count: number; avgT: number | null };
-const unitStats = ref<Record<string, UnitStat>>({});
-const unassignedStat = ref<UnitStat>({ count: 0, avgT: null });
-
 const materialOptions = computed(() => {
   if (!world.value) return [];
   return Object.values(world.value.materials).map((m) => ({
@@ -905,23 +881,40 @@ const secOfDay = computed(() => {
 
 const dayTimeLabel = computed(() => fmtHmsFromSec(secOfDay.value));
 
-const simUnitRows = computed(() => {
+const runtimeUnitRows = computed(() => {
+  const wld = world.value;
+  if (!wld) return [];
+
   const sDay = secOfDay.value;
-  return unitsList.value.map((u) => {
+
+  // chceš stabilní pořadí: shared první, pak podle id/name
+  const unitsArr = Object.values(wld.units)
+    .slice()
+    .sort((a, b) => {
+      if (a.id === SHARED_UNIT_ID) return -1;
+      if (b.id === SHARED_UNIT_ID) return 1;
+      return a.id.localeCompare(b.id);
+    });
+
+  return unitsArr.map((u) => {
     const active = getActiveRange(u, sDay);
     const home = u.params.kind === 'unit' ? isHomeNow(u, sDay) : null;
 
-    const st = unitStats.value[u.id] ?? { count: 0, avgT: null };
+    const rt = u.runtime; // může být undefined, pokud ještě neproběhl optimiseWorld()
+
     return {
       id: u.id,
       name: u.name,
       color: u.color,
       kind: u.params.kind,
+
       schedule: fmtSchedule(u),
       home,
       activeRange: fmtRange(active),
-      avgT: st.avgT,
-      cells: st.count,
+
+      avgT: rt ? rt.avgTemp : null,
+      cells: rt ? rt.allCells.length : 0,
+      heaters: rt ? rt.heaterCells.length : 0,
     };
   });
 });
@@ -968,42 +961,6 @@ const unitForm = reactive({
   awayMin: 16,
   awayMax: 18,
 });
-
-function guardUnlocked(): boolean {
-  return !locked.value;
-}
-
-function updateUnitStats() {
-  const wld = world.value;
-  if (!wld) return;
-
-  const sum: Record<string, number> = {};
-  const cnt: Record<string, number> = {};
-
-  let sumNull = 0;
-  let cntNull = 0;
-
-  for (const c of wld.cells) {
-    const id = c.unitId;
-    if (!id) {
-      sumNull += c.T;
-      cntNull += 1;
-      continue;
-    }
-    sum[id] = (sum[id] ?? 0) + c.T;
-    cnt[id] = (cnt[id] ?? 0) + 1;
-  }
-
-  const out: Record<string, UnitStat> = {};
-  for (const u of unitsList.value) {
-    const c = cnt[u.id] ?? 0;
-    const s = sum[u.id] ?? 0;
-    out[u.id] = { count: c, avgT: c > 0 ? s / c : null };
-  }
-
-  unitStats.value = out;
-  unassignedStat.value = { count: cntNull, avgT: cntNull > 0 ? sumNull / cntNull : null };
-}
 
 function getUnitById(id: string) {
   return world.value?.units?.[id] ?? null;
@@ -1342,7 +1299,6 @@ function setup() {
   minT.value = mm.min;
   maxT.value = mm.max;
 
-  updateUnitStats();
   requestRender(true);
 }
 
@@ -1351,7 +1307,8 @@ function resetTemps() {
   for (const c of world.value.cells) c.T = cfg.initTemp;
   tick.value = 0;
   simTimeSec.value = 0;
-  updateUnitStats();
+
+  world.value.resetOptimisation();
   requestRender(true);
 }
 
@@ -1367,7 +1324,6 @@ function stepOnce() {
   simTimeSec.value += cfg.dt;
 
   enforceEndLimit();
-  updateUnitStats();
   requestRender(true);
 }
 
@@ -1389,7 +1345,6 @@ function loop(ts: number) {
       tick.value += 1;
       simTimeSec.value += cfg.dt;
       enforceEndLimit();
-      updateUnitStats();
       needsRender = true;
 
       simAccMs = 0;
@@ -1782,7 +1737,6 @@ function saveUnit() {
   }
 
   unitDialog.open = false;
-  updateUnitStats();
   requestRender(true);
 }
 
@@ -1797,8 +1751,6 @@ function removeUnit(id: string) {
   }
 
   if (selectedUnitId.value === id) selectedUnitId.value = SHARED_UNIT_ID;
-
-  updateUnitStats();
   requestRender(true);
 }
 

@@ -50,12 +50,15 @@ export type Unit = {
 };
 
 export type World = {
+  __OPTIMISED: boolean;
   w: number;
   h: number;
   cells: Cell[];
   materials: Record<string, Material>;
   units: Record<string, Unit>;
   _dQ: Float64Array;
+
+  resetOptimisation: () => void;
 };
 
 export type Vec2 = { x: number; y: number };
@@ -237,7 +240,57 @@ export function createWorld(opts: {
     };
   }
 
-  return { w: opts.w, h: opts.h, cells, materials, units, _dQ: new Float64Array(n) };
+  return {
+    __OPTIMISED: false,
+    w: opts.w,
+    h: opts.h,
+    cells,
+    materials,
+    units,
+    _dQ: new Float64Array(n),
+    resetOptimisation() {
+      this.__OPTIMISED = false;
+    },
+  };
+}
+
+function optimiseWorld(world: World) {
+  if (world.__OPTIMISED) return;
+
+  const units = Object.values(world.units);
+  const cells = Object.values(world.cells);
+
+  // generate runtime property of units
+  for (let i = 0, len = units.length; i < len; i++) {
+    const unit = units[i];
+    if (!unit) continue;
+
+    unit.runtime = {
+      allCells: [],
+      heaterCells: [],
+      avgTemp: 0,
+    };
+  }
+
+  // assign every unit its cells for quick access
+  for (let cellInd = 0, len = cells.length; cellInd < len; cellInd++) {
+    const cell = cells[cellInd];
+    if (!cell || cell.unitId === null) continue;
+
+    const unit = world.units[cell.unitId];
+    if (!unit) continue;
+
+    if (unit) {
+      unit.runtime?.allCells.push(cellInd);
+
+      const material = world.materials[cell.materialId];
+      if (material?.emitTemp && material?.emitTemp > 0) {
+        unit.runtime?.heaterCells.push(cellInd);
+      }
+    }
+  }
+
+  world.__OPTIMISED = true;
 }
 
 /**
@@ -247,8 +300,10 @@ export function createWorld(opts: {
  * 3) apply material emitters (heater/AC/outside) as relaxation toward emitTemp
  */
 export function stepWorld(world: World, dt: number) {
-  const { w, h, cells, materials } = world;
+  const { w, h, cells, units, materials } = world;
   const n = w * h;
+
+  optimiseWorld(world);
 
   const dQ = world._dQ;
   if (dQ.length !== n) {
@@ -313,6 +368,27 @@ export function stepWorld(world: World, dt: number) {
     const m = materials[c.materialId];
     if (!m || m.emitTemp == null) continue;
     c.T = m.emitTemp;
+  }
+
+  // compute average temperature pre unit
+  const unitsArr = Object.values(units);
+  for (let i = 0, len = unitsArr.length; i < len; i++) {
+    const unit = unitsArr[i];
+    if (!unit?.runtime) continue;
+
+    const n = unit.runtime.allCells.length;
+
+    if (n === 0) {
+      unit.runtime.avgTemp = 0;
+      continue;
+    }
+
+    const sum = unit.runtime.allCells.reduce((total, cellInd) => {
+      const cell = cells[cellInd];
+      return cell ? total + cell.T : total;
+    }, 0);
+
+    unit.runtime.avgTemp = sum / n;
   }
 }
 
