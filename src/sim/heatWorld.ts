@@ -21,6 +21,9 @@ export type Cell = {
   T: number;
   materialId: string;
   unitId: string | null; // apartment
+  // Per-cell emitter switch (for materials with emitTemp).
+  // Controlled automatically by unit avgTemp vs comfy range.
+  tempEmitting: boolean;
 };
 
 export type TempRange = { min: number; max: number };
@@ -39,6 +42,7 @@ export type UnitRuntime = {
   allCells: number[];
   heaterCells: number[];
   avgTemp: number;
+  comfyRange: TempRange;
 };
 
 export type Unit = {
@@ -237,6 +241,7 @@ export function createWorld(opts: {
       T: opts.initTemp,
       materialId: defaultMaterialId,
       unitId: defaultUnitId,
+      tempEmitting: false,
     };
   }
 
@@ -269,6 +274,7 @@ function optimiseWorld(world: World) {
       allCells: [],
       heaterCells: [],
       avgTemp: 0,
+      comfyRange: { min: -Infinity, max: Infinity },
     };
   }
 
@@ -293,22 +299,101 @@ function optimiseWorld(world: World) {
   world.__OPTIMISED = true;
 }
 
+function clamp(v: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function isHomeNow(unit: Unit, secOfDay: number) {
+  if (unit.params.kind !== 'unit') return false;
+
+  const tMin = Math.floor(secOfDay / 60) % 1440;
+  const from = clamp(unit.params.homeFromMin, 0, 1439);
+  const to = clamp(unit.params.homeToMin, 0, 1439);
+
+  if (from === to) return true;
+  if (from < to) return tMin >= from && tMin < to;
+  return tMin >= from || tMin < to;
+}
+
+function getActiveRange(unit: Unit, secOfDay: number): TempRange {
+  if (unit.params.kind === 'shared') return unit.params.comfy;
+  return isHomeNow(unit, secOfDay) ? unit.params.home : unit.params.away;
+}
+
+function shouldEmitterBeOn(emitTemp: number, avgTemp: number, range: TempRange, wasOn: boolean) {
+  // Heater-like source (target above comfy range): heat when too cold.
+  if (emitTemp >= range.max) {
+    if (avgTemp < range.min) return true;
+    if (avgTemp > range.max) return false;
+    return wasOn;
+  }
+
+  // Cooler-like source (target below comfy range): cool when too hot.
+  if (emitTemp <= range.min) {
+    if (avgTemp > range.max) return true;
+    if (avgTemp < range.min) return false;
+    return wasOn;
+  }
+
+  // Neutral source (target inside range): active only outside comfy range.
+  if (avgTemp < range.min || avgTemp > range.max) return true;
+  return false;
+}
+
+function recomputeUnitAvgTemps(world: World) {
+  const unitsArr = Object.values(world.units);
+  for (let i = 0, len = unitsArr.length; i < len; i++) {
+    const unit = unitsArr[i];
+    if (!unit?.runtime) continue;
+
+    const cellCount = unit.runtime.allCells.length;
+    if (cellCount === 0) {
+      unit.runtime.avgTemp = 0;
+      continue;
+    }
+
+    let sum = 0;
+    for (let j = 0; j < cellCount; j++) {
+      const cellInd = unit.runtime.allCells[j];
+      if (!cellInd) continue;
+
+      const cell = world.cells[cellInd];
+      if (!cell) continue;
+      sum += cell.T;
+    }
+
+    unit.runtime.avgTemp = sum / cellCount;
+  }
+}
+
+function recomputeUnitComfyRanges(world: World, secOfDay: number) {
+  const unitsArr = Object.values(world.units);
+  for (let i = 0, len = unitsArr.length; i < len; i++) {
+    const unit = unitsArr[i];
+    const rt = unit?.runtime;
+    if (!unit || !rt) continue;
+
+    rt.comfyRange = getActiveRange(unit, secOfDay);
+  }
+}
+
 /**
  * One simulation step:
  * 1) diffuse energy between neighbors4 using per-edge conductance derived from materials k
  * 2) update temperature using per-cell cap
  * 3) apply material emitters (heater/AC/outside) as relaxation toward emitTemp
  */
-export function stepWorld(world: World, dt: number) {
+export function stepWorld(world: World, dt: number, secOfDay = 0) {
   const { w, h, cells, units, materials } = world;
   const n = w * h;
 
   optimiseWorld(world);
 
-  const dQ = world._dQ;
+  let dQ = world._dQ;
   if (dQ.length !== n) {
     // kdybys někdy měnil rozměry bez createWorld (jinak netřeba)
     world._dQ = new Float64Array(n);
+    dQ = world._dQ;
   } else {
     dQ.fill(0);
   }
@@ -362,33 +447,47 @@ export function stepWorld(world: World, dt: number) {
     c.T += dQ[i] / cap;
   }
 
-  // hard clamp fixed temps
+  // apply fixed/emitter temperatures
   for (let i = 0; i < n; i++) {
     const c = cells[i];
     const m = materials[c.materialId];
     if (!m || m.emitTemp == null) continue;
-    c.T = m.emitTemp;
-  }
 
-  // compute average temperature pre unit
-  const unitsArr = Object.values(units);
-  for (let i = 0, len = unitsArr.length; i < len; i++) {
-    const unit = unitsArr[i];
-    if (!unit?.runtime) continue;
-
-    const n = unit.runtime.allCells.length;
-
-    if (n === 0) {
-      unit.runtime.avgTemp = 0;
+    // Cells without unit are considered fixed infrastructure emitters.
+    if (!c.unitId) {
+      c.tempEmitting = true;
+      c.T = m.emitTemp;
       continue;
     }
 
-    const sum = unit.runtime.allCells.reduce((total, cellInd) => {
-      const cell = cells[cellInd];
-      return cell ? total + cell.T : total;
-    }, 0);
+    // Unknown unit: keep emitter on as safe fallback.
+    if (!units[c.unitId]) {
+      c.tempEmitting = true;
+      c.T = m.emitTemp;
+      continue;
+    }
 
-    unit.runtime.avgTemp = sum / n;
+    if (c.tempEmitting) {
+      c.T = m.emitTemp;
+    }
+  }
+
+  recomputeUnitAvgTemps(world);
+  recomputeUnitComfyRanges(world, secOfDay);
+
+  // auto-control per-cell emitters by unit avgTemp + active comfy range
+  // (only for cells assigned to a known unit)
+  for (let i = 0; i < n; i++) {
+    const c = cells[i];
+    const m = materials[c.materialId];
+    if (!m || m.emitTemp == null) continue;
+    if (!c.unitId) continue;
+
+    const unit = units[c.unitId];
+    const rt = unit?.runtime;
+    if (!unit || !rt) continue;
+
+    c.tempEmitting = shouldEmitterBeOn(m.emitTemp, rt.avgTemp, rt.comfyRange, c.tempEmitting);
   }
 }
 

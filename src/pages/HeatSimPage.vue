@@ -1304,7 +1304,10 @@ function setup() {
 
 function resetTemps() {
   if (!world.value) return;
-  for (const c of world.value.cells) c.T = cfg.initTemp;
+  for (const c of world.value.cells) {
+    c.T = cfg.initTemp;
+    c.tempEmitting = false;
+  }
   tick.value = 0;
   simTimeSec.value = 0;
 
@@ -1319,7 +1322,7 @@ function stepOnce() {
   const lim = endSimSec.value;
   if (lim != null && simTimeSec.value >= lim) return;
 
-  stepWorld(world.value, cfg.dt);
+  stepWorld(world.value, cfg.dt, secOfDay.value);
   tick.value++;
   simTimeSec.value += cfg.dt;
 
@@ -1341,7 +1344,7 @@ function loop(ts: number) {
     const stepMs = 1000 / target;
 
     if (simAccMs >= stepMs) {
-      stepWorld(world.value, cfg.dt);
+      stepWorld(world.value, cfg.dt, secOfDay.value);
       tick.value += 1;
       simTimeSec.value += cfg.dt;
       enforceEndLimit();
