@@ -127,6 +127,61 @@
                       />
                     </div>
                   </div>
+
+                  <q-separator class="q-my-sm" />
+                  <div class="text-subtitle2 q-mb-sm">Outside temperature source</div>
+                  <q-btn-toggle
+                    v-model="cfg.outsideTempMode"
+                    spread
+                    unelevated
+                    class="q-mb-sm"
+                    :options="[
+                      { label: 'Constant', value: 'constant' },
+                      { label: 'Series', value: 'series' },
+                    ]"
+                  />
+
+                  <q-input
+                    v-if="cfg.outsideTempMode === 'constant'"
+                    v-model.number="cfg.outsideTempConst"
+                    type="number"
+                    label="Outside constant (C)"
+                    dense
+                    outlined
+                  />
+
+                  <div v-else>
+                    <q-input
+                      v-model="outsideSeriesInput"
+                      type="textarea"
+                      dense
+                      outlined
+                      rows="5"
+                      input-style="max-height: 160px; overflow-y: auto;"
+                      label="Outside series (JSON array)"
+                    />
+                    <q-file
+                      class="q-mt-sm"
+                      dense
+                      outlined
+                      clearable
+                      accept=".json,application/json"
+                      label="Load series from JSON file"
+                      @update:model-value="onOutsideSeriesFileSelected"
+                    />
+                    <div
+                      class="text-caption q-mt-xs"
+                      :class="outsideSeriesInvalid ? 'text-negative' : 'text-grey-7'"
+                    >
+                      <span v-if="outsideSeriesInvalid"
+                        >Invalid format. Use JSON array (e.g. [0,-1,2]).</span
+                      >
+                      <span v-else
+                        >Loaded values: <b>{{ cfg.outsideTempSeries.length }}</b> (1 value = 1 hour,
+                        loops after end).</span
+                      >
+                    </div>
+                  </div>
                 </div>
 
                 <div v-else>
@@ -354,7 +409,7 @@
                         dense
                         icon="delete"
                         color="negative"
-                        :disable="locked || m.id === 'air'"
+                        :disable="locked || m.id === 'air' || m.id === 'outside'"
                         @click.stop="removeMaterial(m.id)"
                       />
                     </q-item-section>
@@ -803,6 +858,8 @@ const cfg = reactive({
   ...createDefaultSimulationConfig(),
   renderFpsLimit: 12,
 });
+const outsideSeriesInput = ref('');
+const outsideSeriesInvalid = ref(false);
 
 let simulationClient: HeatSimulationWorkerClient | null = null;
 const world = ref<HeatWorldSnapshot | null>(null);
@@ -857,7 +914,37 @@ function getSimulationConfig(): Partial<SimulationConfig> {
     endEnabled: cfg.endEnabled,
     endValue: cfg.endValue,
     endUnit: cfg.endUnit,
+    outsideTempMode: cfg.outsideTempMode,
+    outsideTempConst: cfg.outsideTempConst,
+    outsideTempSeries: [...cfg.outsideTempSeries],
   };
+}
+
+function parseOutsideSeriesInput(text: string): number[] | null {
+  const raw = text.trim();
+  if (!raw) return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+
+  const nums = parsed.map((v) => Number(v));
+  if (nums.some((v) => !Number.isFinite(v))) return null;
+  return nums;
+}
+
+async function onOutsideSeriesFileSelected(fileModel: File | readonly File[] | null) {
+  const file = Array.isArray(fileModel) ? fileModel[0] : fileModel;
+  if (!file) return;
+  try {
+    outsideSeriesInput.value = await file.text();
+  } catch {
+    outsideSeriesInvalid.value = true;
+  }
 }
 
 function bumpWorld() {
@@ -1429,7 +1516,7 @@ async function saveMaterial() {
 }
 
 async function removeMaterial(id: string) {
-  if (locked.value || !world.value || !simulationClient || id === 'air') return;
+  if (locked.value || !world.value || !simulationClient || id === 'air' || id === 'outside') return;
   if (!(await simulationClient.removeMaterial(id, 'air'))) return;
   if (selectedMaterialId.value === id) selectedMaterialId.value = 'air';
   requestRender(true);
@@ -1541,6 +1628,13 @@ watch(scale, () => {
   setupCanvasSize();
   requestRender();
 });
+watch(outsideSeriesInput, (text) => {
+  const parsed = parseOutsideSeriesInput(text);
+  outsideSeriesInvalid.value = parsed == null;
+  if (parsed) {
+    cfg.outsideTempSeries = parsed;
+  }
+});
 
 watch(
   [
@@ -1553,6 +1647,9 @@ watch(
     () => cfg.endEnabled,
     () => cfg.endValue,
     () => cfg.endUnit,
+    () => cfg.outsideTempMode,
+    () => cfg.outsideTempConst,
+    () => cfg.outsideTempSeries.join('|'),
   ],
   () => {
     void simulationClient?.setConfig(getSimulationConfig());
@@ -1560,6 +1657,7 @@ watch(
 );
 
 onMounted(async () => {
+  outsideSeriesInput.value = JSON.stringify(cfg.outsideTempSeries);
   simulationClient = new HeatSimulationWorkerClient(applySnapshot);
   await simulationClient.init(getSimulationConfig());
   await setup();

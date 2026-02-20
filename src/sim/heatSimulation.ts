@@ -13,6 +13,7 @@ import {
 } from 'src/sim/heatWorld';
 
 export type EndUnit = 'h' | 'd';
+export type OutsideTempMode = 'constant' | 'series';
 
 export type SimulationConfig = {
   w: number;
@@ -24,6 +25,9 @@ export type SimulationConfig = {
   endEnabled: boolean;
   endValue: number;
   endUnit: EndUnit;
+  outsideTempMode: OutsideTempMode;
+  outsideTempConst: number;
+  outsideTempSeries: number[];
 };
 
 export type MaterialTool = 'paint' | 'pick' | 'fill';
@@ -61,6 +65,9 @@ export function createDefaultSimulationConfig(): SimulationConfig {
     endEnabled: true,
     endValue: 30,
     endUnit: 'h',
+    outsideTempMode: 'constant',
+    outsideTempConst: 0,
+    outsideTempSeries: [0, -1, -2, -2, -1, -2, -1, 0, 1, 4, 8, 10, 10, 11],
   };
 }
 
@@ -119,6 +126,7 @@ export class HeatSimulation {
 
   setConfig(next: Partial<SimulationConfig>) {
     this.cfg = { ...this.cfg, ...next };
+    this.syncOutsideEmitTemp();
   }
 
   get endSimSec(): number | null {
@@ -157,6 +165,7 @@ export class HeatSimulation {
     this.simTimeSecRef = 0;
     this.runningRef = false;
     this.simAccMs = 0;
+    this.syncOutsideEmitTemp();
   }
 
   resetTemperatureAndTime() {
@@ -170,6 +179,7 @@ export class HeatSimulation {
     this.runningRef = false;
     this.simAccMs = 0;
     this.worldRef.resetOptimisation();
+    this.syncOutsideEmitTemp();
   }
 
   toggleRun() {
@@ -183,11 +193,27 @@ export class HeatSimulation {
       return false;
     }
 
+    this.syncOutsideEmitTemp();
     stepWorld(this.worldRef, this.cfg.dt, this.secOfDay);
     this.tickRef += 1;
     this.simTimeSecRef += this.cfg.dt;
     this.enforceEndLimit();
     return true;
+  }
+
+  private getOutsideEmitTemp() {
+    if (this.cfg.outsideTempMode === 'series' && this.cfg.outsideTempSeries.length > 0) {
+      const idx = Math.floor(this.simTimeSecRef / 3600) % this.cfg.outsideTempSeries.length;
+      return this.cfg.outsideTempSeries[idx] ?? this.cfg.outsideTempConst;
+    }
+    return this.cfg.outsideTempConst;
+  }
+
+  private syncOutsideEmitTemp() {
+    if (!this.worldRef) return;
+    const outside = this.worldRef.materials.outside;
+    if (!outside) return;
+    outside.emitTemp = this.getOutsideEmitTemp();
   }
 
   advanceFrame(frameMs: number) {
@@ -264,7 +290,7 @@ export class HeatSimulation {
 
   removeMaterial(id: string, fallbackId = 'air') {
     if (!this.worldRef || this.locked) return false;
-    if (id === 'air') return false;
+    if (id === 'air' || id === 'outside') return false;
     deleteMaterial(this.worldRef, id, fallbackId);
     this.worldRef.resetOptimisation();
     return true;
