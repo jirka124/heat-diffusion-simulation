@@ -778,18 +778,20 @@
 </template>
 
 <script setup lang="ts">
-import { computed, markRaw, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
   OUTSIDE_TARGET_ID,
   SHARED_UNIT_ID,
-  getMinMaxT,
   type Material,
   type TempRange,
   type Unit,
   type UnitParams,
-  type World,
 } from 'src/sim/heatWorld';
-import { HeatSimulation, createDefaultSimulationConfig } from 'src/sim/heatSimulation';
+import { createDefaultSimulationConfig } from 'src/sim/heatSimulation';
+import type { SimulationConfig } from 'src/sim/heatSimulation';
+import { HeatSimulationWorkerClient } from 'src/sim/heatSimulationWorkerClient';
+import type { RuntimeUnitRow } from 'src/sim/heatSimulation';
+import type { HeatWorldSnapshot, SimulationSnapshot } from 'src/sim/heatWorkerProtocol';
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 const viewportEl = ref<HTMLDivElement | null>(null);
@@ -802,8 +804,9 @@ const cfg = reactive({
   renderFpsLimit: 12,
 });
 
-const simulation = markRaw(new HeatSimulation(cfg));
-const world = ref<World | null>(null);
+let simulationClient: HeatSimulationWorkerClient | null = null;
+const world = ref<HeatWorldSnapshot | null>(null);
+const runtimeRowsRaw = ref<RuntimeUnitRow[]>([]);
 const worldVersion = ref(0);
 
 const tick = ref(0);
@@ -822,15 +825,29 @@ let fpsFrames = 0;
 let fpsLastTs = 0;
 let mmCounter = 0;
 
-function syncSimulationState() {
-  world.value = simulation.world;
-  tick.value = simulation.tick;
-  simTimeSec.value = simulation.simTimeSec;
-  running.value = simulation.running;
+function applySnapshot(snapshot: SimulationSnapshot) {
+  const prevW = world.value?.w ?? null;
+  const prevH = world.value?.h ?? null;
+
+  world.value = snapshot.world;
+  runtimeRowsRaw.value = snapshot.runtimeRows;
+  tick.value = snapshot.tick;
+  simTimeSec.value = snapshot.simTimeSec;
+  running.value = snapshot.running;
+
+  if (world.value && (world.value.w !== prevW || world.value.h !== prevH)) {
+    setupCanvasSize();
+    const mm = getMinMaxSnapshot(world.value);
+    minT.value = mm.min;
+    maxT.value = mm.max;
+  }
+
+  bumpWorld();
+  requestRender();
 }
 
-function applySimulationConfig() {
-  simulation.setConfig({
+function getSimulationConfig(): Partial<SimulationConfig> {
+  return {
     w: cfg.w,
     h: cfg.h,
     initTemp: cfg.initTemp,
@@ -840,7 +857,7 @@ function applySimulationConfig() {
     endEnabled: cfg.endEnabled,
     endValue: cfg.endValue,
     endUnit: cfg.endUnit,
-  });
+  };
 }
 
 function bumpWorld() {
@@ -917,8 +934,7 @@ const dayTimeLabel = computed(() => fmtHmsFromSec(secOfDay.value));
 
 const runtimeUnitRows = computed(() => {
   void worldVersion.value;
-  void simTimeSec.value;
-  return simulation.getRuntimeRows().map((r) => ({
+  return runtimeRowsRaw.value.map((r) => ({
     id: r.id,
     name: r.name,
     color: r.color,
@@ -1112,6 +1128,18 @@ function setupCanvasSize() {
   canvasEl.value.style.cursor = paintTool.value === 'pick' ? 'crosshair' : 'cell';
 }
 
+function getMinMaxSnapshot(snapshot: HeatWorldSnapshot) {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const c of snapshot.cells) {
+    if (c.T < min) min = c.T;
+    if (c.T > max) max = c.T;
+  }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: 0, max: 1 };
+  if (min === max) return { min, max: min + 1e-9 };
+  return { min, max };
+}
+
 function clamp01(x: number) {
   return Math.max(0, Math.min(1, x));
 }
@@ -1183,7 +1211,7 @@ function render() {
     autoScale.value &&
     ++mmCounter % 10 === 0
   ) {
-    const mm = getMinMaxT(world.value);
+    const mm = getMinMaxSnapshot(world.value);
     mn = mm.min;
     mx = mm.max;
     minT.value = mn;
@@ -1195,6 +1223,7 @@ function render() {
 
   for (let i = 0; i < cells.length; i++) {
     const c = cells[i];
+    if (!c) continue;
     const m = materials[c.materialId];
     const [br, bg, bb] = m ? hexToRgb(m.color) : ([80, 80, 80] as const);
 
@@ -1232,67 +1261,30 @@ function render() {
   ctx.putImageData(img, 0, 0);
 }
 
-function setup() {
-  applySimulationConfig();
-  simulation.setup();
-  syncSimulationState();
+async function setup() {
+  if (!simulationClient) return;
+  await simulationClient.setup();
 
   selectedMaterialId.value = 'air';
   selectedUnitId.value = SHARED_UNIT_ID;
-
-  setupCanvasSize();
-  if (world.value) {
-    const mm = getMinMaxT(world.value);
-    minT.value = mm.min;
-    maxT.value = mm.max;
-  }
-
-  bumpWorld();
   requestRender(true);
 }
 
-function resetTemps() {
-  applySimulationConfig();
-  simulation.resetTemperatureAndTime();
-  syncSimulationState();
-
-  if (world.value) {
-    const mm = getMinMaxT(world.value);
-    minT.value = mm.min;
-    maxT.value = mm.max;
-  }
-
-  bumpWorld();
+async function resetTemps() {
+  if (!simulationClient) return;
+  await simulationClient.resetTemperatureAndTime();
   requestRender(true);
 }
 
-function stepOnce() {
-  applySimulationConfig();
-  const changed = simulation.stepOnce();
-  syncSimulationState();
-
-  if (changed) bumpWorld();
+async function stepOnce() {
+  if (!simulationClient) return;
+  await simulationClient.stepOnce();
   requestRender(true);
 }
 
 function loop(ts: number) {
   if (!lastTs) lastTs = ts;
-  const dtMs = ts - lastTs;
   lastTs = ts;
-
-  applySimulationConfig();
-  const changed = simulation.advanceFrame(dtMs);
-  const prevRunning = running.value;
-  syncSimulationState();
-
-  if (changed) {
-    bumpWorld();
-    needsRender = true;
-  }
-  if (prevRunning && !running.value) {
-    needsRender = true;
-    forcedRender = true;
-  }
 
   const limit = Math.max(1, Math.min(60, Math.floor(cfg.renderFpsLimit || 12)));
   const interval = 1000 / limit;
@@ -1315,9 +1307,9 @@ function loop(ts: number) {
   rafId.value = requestAnimationFrame(loop);
 }
 
-function toggleRun() {
-  simulation.toggleRun();
-  syncSimulationState();
+async function toggleRun() {
+  if (!simulationClient) return;
+  await simulationClient.toggleRun();
   if (running.value) requestRender(true);
 }
 
@@ -1330,18 +1322,23 @@ function getCellIndexFromEvent(evt: PointerEvent) {
   return y * world.value.w + x;
 }
 
-function applyPaint(i: number) {
-  if (!world.value || locked.value) return;
+let paintOpId = 0;
 
+async function applyPaint(i: number) {
+  if (!world.value || locked.value || !simulationClient) return;
+
+  const opId = ++paintOpId;
   if (tab.value === 'units') {
-    const picked = simulation.applyUnitTool(i, unitPaintTool.value, selectedUnitId.value);
-    if (picked) selectedUnitId.value = picked;
+    const picked = await simulationClient.applyUnitTool(i, unitPaintTool.value, selectedUnitId.value);
+    if (picked && opId === paintOpId) selectedUnitId.value = picked;
   } else {
-    const picked = simulation.applyMaterialTool(i, paintTool.value, selectedMaterialId.value);
-    if (picked) selectedMaterialId.value = picked;
+    const picked = await simulationClient.applyMaterialTool(
+      i,
+      paintTool.value,
+      selectedMaterialId.value,
+    );
+    if (picked && opId === paintOpId) selectedMaterialId.value = picked;
   }
-
-  bumpWorld();
 }
 
 function onPointerDown(evt: PointerEvent) {
@@ -1354,7 +1351,7 @@ function onPointerDown(evt: PointerEvent) {
   if (i == null) return;
 
   lastPaintIndex = i;
-  applyPaint(i);
+  void applyPaint(i);
   requestRender();
 }
 
@@ -1366,7 +1363,7 @@ function onPointerMove(evt: PointerEvent) {
   if (i == null || i === lastPaintIndex) return;
 
   lastPaintIndex = i;
-  applyPaint(i);
+  void applyPaint(i);
   requestRender();
 }
 
@@ -1410,8 +1407,8 @@ function normalizeId(s: string) {
     .replace(/[^a-z0-9-]/g, '');
 }
 
-function saveMaterial() {
-  if (locked.value || !world.value) return;
+async function saveMaterial() {
+  if (locked.value || !world.value || !simulationClient) return;
 
   const id = matDialog.mode === 'add' ? normalizeId(matForm.id) : matForm.id;
   if (!id) return;
@@ -1425,19 +1422,17 @@ function saveMaterial() {
     emitTemp: matForm.emitTemp == null ? null : Number(matForm.emitTemp),
   };
 
-  if (!simulation.upsertMaterial(material)) return;
+  if (!(await simulationClient.upsertMaterial(material))) return;
   selectedMaterialId.value = id;
   matDialog.open = false;
-  bumpWorld();
-  requestRender();
+  requestRender(true);
 }
 
-function removeMaterial(id: string) {
-  if (locked.value || !world.value || id === 'air') return;
-  if (!simulation.removeMaterial(id, 'air')) return;
+async function removeMaterial(id: string) {
+  if (locked.value || !world.value || !simulationClient || id === 'air') return;
+  if (!(await simulationClient.removeMaterial(id, 'air'))) return;
   if (selectedMaterialId.value === id) selectedMaterialId.value = 'air';
-  bumpWorld();
-  requestRender();
+  requestRender(true);
 }
 
 function openAddUnit() {
@@ -1492,8 +1487,8 @@ function normalizeUnitId(s: string) {
     .replace(/[^A-Z0-9_-]/g, '');
 }
 
-function saveUnit() {
-  if (!world.value || locked.value) return;
+async function saveUnit() {
+  if (!world.value || locked.value || !simulationClient) return;
 
   const id = unitDialog.mode === 'add' ? normalizeUnitId(unitForm.id) : unitForm.id;
   if (!id) return;
@@ -1517,20 +1512,21 @@ function saveUnit() {
     params,
   };
 
-  const ok = unitDialog.mode === 'add' ? simulation.addUnit(unit) : simulation.updateUnit(unit);
+  const ok =
+    unitDialog.mode === 'add'
+      ? await simulationClient.addUnit(unit)
+      : await simulationClient.updateUnit(unit);
   if (!ok) return;
 
   if (unitDialog.mode === 'add') selectedUnitId.value = id;
   unitDialog.open = false;
-  bumpWorld();
   requestRender(true);
 }
 
-function removeUnit(id: string) {
-  if (!world.value || id === SHARED_UNIT_ID || locked.value) return;
-  if (!simulation.removeUnit(id)) return;
+async function removeUnit(id: string) {
+  if (!world.value || !simulationClient || id === SHARED_UNIT_ID || locked.value) return;
+  if (!(await simulationClient.removeUnit(id))) return;
   if (selectedUnitId.value === id) selectedUnitId.value = SHARED_UNIT_ID;
-  bumpWorld();
   requestRender(true);
 }
 
@@ -1546,8 +1542,27 @@ watch(scale, () => {
   requestRender();
 });
 
-onMounted(() => {
-  setup();
+watch(
+  [
+    () => cfg.w,
+    () => cfg.h,
+    () => cfg.initTemp,
+    () => cfg.dt,
+    () => cfg.simTicksPerSec,
+    () => cfg.startDayTimeMin,
+    () => cfg.endEnabled,
+    () => cfg.endValue,
+    () => cfg.endUnit,
+  ],
+  () => {
+    void simulationClient?.setConfig(getSimulationConfig());
+  },
+);
+
+onMounted(async () => {
+  simulationClient = new HeatSimulationWorkerClient(applySnapshot);
+  await simulationClient.init(getSimulationConfig());
+  await setup();
   rafId.value = requestAnimationFrame(loop);
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
@@ -1557,6 +1572,8 @@ onBeforeUnmount(() => {
   if (rafId.value != null) cancelAnimationFrame(rafId.value);
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
+  simulationClient?.terminate();
+  simulationClient = null;
 });
 </script>
 
