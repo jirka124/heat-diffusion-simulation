@@ -43,6 +43,10 @@ export type UnitRuntime = {
   heaterCells: number[];
   avgTemp: number;
   comfyRange: TempRange;
+  // cellIndex -> directional targets (left, right, up, down)
+  boundaryTargetsByCell: Record<number, (string | null)[]>;
+  heatFlowTick: Record<string, number>;
+  heatFlowTotal: Record<string, number>;
 };
 
 export type Unit = {
@@ -61,6 +65,8 @@ export type World = {
   materials: Record<string, Material>;
   units: Record<string, Unit>;
   _dQ: Float64Array;
+  // flattened [cellIndex * 4 + dir] where dir: 0=left,1=right,2=up,3=down
+  _boundaryTargetByDir: (string | null)[];
 
   resetOptimisation: () => void;
 };
@@ -68,6 +74,7 @@ export type World = {
 export type Vec2 = { x: number; y: number };
 
 export const SHARED_UNIT_ID = 'SHARED';
+export const OUTSIDE_TARGET_ID = 'OUTSIDE';
 
 export function xyToN(pos: Vec2, w: number) {
   return pos.y * w + pos.x;
@@ -253,17 +260,58 @@ export function createWorld(opts: {
     materials,
     units,
     _dQ: new Float64Array(n),
+    _boundaryTargetByDir: new Array(n * 4).fill(null),
     resetOptimisation() {
       this.__OPTIMISED = false;
     },
   };
 }
 
+function resolveBoundaryTargetForDirection(
+  world: World,
+  sourceCellIndex: number,
+  sourceUnitId: string,
+  dx: number,
+  dy: number,
+): string | null {
+  const { w, h, cells } = world;
+  const sx = sourceCellIndex % w;
+  const sy = (sourceCellIndex / w) | 0;
+  const nx = sx + dx;
+  const ny = sy + dy;
+
+  // direct outside from map boundary
+  if (nx < 0 || ny < 0 || nx >= w || ny >= h) return OUTSIDE_TARGET_ID; // TODO: asi spíš null, protože nebude probíhat přenos tepla mimo mapu
+
+  let cx = nx;
+  let cy = ny;
+  let rayMode = false;
+
+  while (cx >= 0 && cy >= 0 && cx < w && cy < h) {
+    const n = cy * w + cx;
+    const c = cells[n];
+    if (!c) return null;
+
+    if (c.unitId === sourceUnitId) return null;
+    if (c.unitId && c.unitId !== sourceUnitId) return c.unitId;
+    if (c.materialId === 'outside') return OUTSIDE_TARGET_ID;
+
+    // start raycast through non-unit infrastructure
+    rayMode = true;
+    cx += dx;
+    cy += dy;
+  }
+
+  // if raycast ended at map boundary, ignore
+  return rayMode ? null : OUTSIDE_TARGET_ID;
+}
+
 function optimiseWorld(world: World) {
   if (world.__OPTIMISED) return;
 
   const units = Object.values(world.units);
-  const cells = Object.values(world.cells);
+  const cells = world.cells;
+  const n = world.w * world.h;
 
   // generate runtime property of units
   for (let i = 0, len = units.length; i < len; i++) {
@@ -275,7 +323,16 @@ function optimiseWorld(world: World) {
       heaterCells: [],
       avgTemp: 0,
       comfyRange: { min: -Infinity, max: Infinity },
+      boundaryTargetsByCell: {},
+      heatFlowTick: {},
+      heatFlowTotal: {},
     };
+  }
+
+  if (world._boundaryTargetByDir.length !== n * 4) {
+    world._boundaryTargetByDir = new Array(n * 4).fill(null);
+  } else {
+    world._boundaryTargetByDir.fill(null);
   }
 
   // assign every unit its cells for quick access
@@ -294,6 +351,34 @@ function optimiseWorld(world: World) {
         unit.runtime?.heaterCells.push(cellInd);
       }
     }
+  }
+
+  // detect boundary targets per unit cell and direction
+  const dirs = [
+    [-1, 0], // left
+    [1, 0], // right
+    [0, -1], // up
+    [0, 1], // down
+  ] as const;
+
+  for (let cellInd = 0, len = cells.length; cellInd < len; cellInd++) {
+    const cell = cells[cellInd];
+    if (!cell || !cell.unitId) continue;
+
+    const unit = world.units[cell.unitId];
+    const rt = unit?.runtime;
+    if (!unit || !rt) continue;
+
+    const byDir: (string | null)[] = [null, null, null, null];
+
+    for (let dir = 0; dir < 4; dir++) {
+      const [dx, dy] = dirs[dir];
+      const targetId = resolveBoundaryTargetForDirection(world, cellInd, cell.unitId, dx, dy);
+      byDir[dir] = targetId;
+      world._boundaryTargetByDir[cellInd * 4 + dir] = targetId;
+    }
+
+    rt.boundaryTargetsByCell[cellInd] = byDir;
   }
 
   world.__OPTIMISED = true;
@@ -377,6 +462,57 @@ function recomputeUnitComfyRanges(world: World, secOfDay: number) {
   }
 }
 
+function resetHeatFlowTick(world: World) {
+  const unitsArr = Object.values(world.units);
+  for (let i = 0; i < unitsArr.length; i++) {
+    const rt = unitsArr[i]?.runtime;
+    if (!rt) continue;
+    rt.heatFlowTick = {};
+  }
+}
+
+function dirFromTo(i: number, j: number, w: number): 0 | 1 | 2 | 3 | null {
+  if (j === i - 1) return 0;
+  if (j === i + 1) return 1;
+  if (j === i - w) return 2;
+  if (j === i + w) return 3;
+  return null;
+}
+
+function addHeatFlow(world: World, fromUnitId: string, targetId: string, amount: number) {
+  const rt = world.units[fromUnitId]?.runtime;
+  if (!rt || !Number.isFinite(amount) || amount === 0) return;
+
+  rt.heatFlowTick[targetId] = (rt.heatFlowTick[targetId] ?? 0) + amount;
+  rt.heatFlowTotal[targetId] = (rt.heatFlowTotal[targetId] ?? 0) + amount;
+}
+
+function recordInterUnitHeatFlow(world: World, i: number, j: number, q: number) {
+  const { cells, w, _boundaryTargetByDir } = world;
+
+  const ci = cells[i];
+  const cj = cells[j];
+  if (!ci || !cj) return;
+
+  const dirIj = dirFromTo(i, j, w);
+  const dirJi = dirFromTo(j, i, w);
+  if (dirIj == null || dirJi == null) return;
+
+  if (ci.unitId) {
+    const targetId = _boundaryTargetByDir[i * 4 + dirIj];
+    if (targetId) {
+      addHeatFlow(world, ci.unitId, targetId, q);
+    }
+  }
+
+  if (cj.unitId) {
+    const targetId = _boundaryTargetByDir[j * 4 + dirJi];
+    if (targetId) {
+      addHeatFlow(world, cj.unitId, targetId, -q);
+    }
+  }
+}
+
 /**
  * One simulation step:
  * 1) diffuse energy between neighbors4 using per-edge conductance derived from materials k
@@ -388,6 +524,7 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
   const n = w * h;
 
   optimiseWorld(world);
+  resetHeatFlowTick(world);
 
   let dQ = world._dQ;
   if (dQ.length !== n) {
@@ -416,6 +553,7 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
     const q = g * (Ti - Tj) * dt;
     dQ[i] -= q;
     dQ[j] += q;
+    recordInterUnitHeatFlow(world, i, j, q);
   };
 
   // horizontal edges

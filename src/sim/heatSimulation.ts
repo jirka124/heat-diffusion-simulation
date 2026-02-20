@@ -1,4 +1,5 @@
 import {
+  OUTSIDE_TARGET_ID,
   SHARED_UNIT_ID,
   createWorld,
   defaultMaterials,
@@ -39,6 +40,12 @@ export type RuntimeUnitRow = {
   avgT: number | null;
   cells: number;
   heaters: number;
+  heatFlows: Array<{
+    targetId: string;
+    targetName: string;
+    tick: number;
+    total: number;
+  }>;
 };
 
 export function createDefaultSimulationConfig(): SimulationConfig {
@@ -302,6 +309,32 @@ export class HeatSimulation {
         return a.id.localeCompare(b.id);
       })
       .map((u) => ({
+        ...(() => {
+          const rt = u.runtime;
+          const targetIds = new Set<string>();
+          if (rt) {
+            Object.keys(rt.heatFlowTick).forEach((id) => targetIds.add(id));
+            Object.keys(rt.heatFlowTotal).forEach((id) => targetIds.add(id));
+          }
+
+          const heatFlows = Array.from(targetIds)
+            .map((targetId) => {
+              const targetName =
+                targetId === OUTSIDE_TARGET_ID
+                  ? 'Outside'
+                  : (this.worldRef?.units[targetId]?.name ?? targetId);
+              return {
+                targetId,
+                targetName,
+                tick: rt?.heatFlowTick[targetId] ?? 0,
+                total: rt?.heatFlowTotal[targetId] ?? 0,
+              };
+            })
+            .filter((x) => Math.abs(x.tick) > 1e-12 || Math.abs(x.total) > 1e-12)
+            .sort((a, b) => a.targetName.localeCompare(b.targetName));
+
+          return { heatFlows };
+        })(),
         id: u.id,
         name: u.name,
         color: u.color,

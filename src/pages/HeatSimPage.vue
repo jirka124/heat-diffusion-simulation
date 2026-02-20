@@ -161,6 +161,32 @@
                             - Heaters: <b>{{ r.heaters }}</b></span
                           >
                         </q-item-label>
+                        <q-item-label v-if="r.heatFlows.length > 0" caption>
+                          Flows (+out | -in)
+                          <div class="flow-list">
+                            <div
+                              v-for="f in r.heatFlows"
+                              :key="`${r.id}-${f.targetId}`"
+                              class="flow-row"
+                            >
+                              <span
+                                class="mat-swatch flow-swatch"
+                                :style="{ background: flowTargetColor(f.targetId) }"
+                              />
+                              <span class="flow-name">{{ f.targetName }}</span>
+                              <span
+                                class="flow-val"
+                                :style="{ color: flowDirectionColor(f.tick) }"
+                                >{{ formatEnergySI(f.tick) }}</span
+                              >
+                              <span
+                                class="flow-val"
+                                :style="{ color: flowDirectionColor(f.total) }"
+                                >{{ formatEnergySI(f.total) }}</span
+                              >
+                            </div>
+                          </div>
+                        </q-item-label>
                       </q-item-section>
 
                       <q-item-section side>
@@ -747,6 +773,7 @@
 <script setup lang="ts">
 import { computed, markRaw, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import {
+  OUTSIDE_TARGET_ID,
   SHARED_UNIT_ID,
   getMinMaxT,
   type Material,
@@ -895,6 +922,7 @@ const runtimeUnitRows = computed(() => {
     avgT: r.avgT,
     cells: r.cells,
     heaters: r.heaters,
+    heatFlows: r.heatFlows,
   }));
 });
 
@@ -1032,6 +1060,38 @@ function fmtHmsFromSec(secOfDayValue: number) {
 
 function fmtRange(r: TempRange) {
   return `${r.min}-${r.max} C`;
+}
+
+function formatEnergySI(value: number) {
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  const units: Array<{ factor: number; symbol: string }> = [
+    { factor: 1e9, symbol: 'GJ' },
+    { factor: 1e6, symbol: 'MJ' },
+    { factor: 1e3, symbol: 'kJ' },
+    { factor: 1, symbol: 'J' },
+    { factor: 1e-3, symbol: 'mJ' },
+    { factor: 1e-6, symbol: 'uJ' },
+  ];
+
+  for (const u of units) {
+    if (abs >= u.factor) {
+      const scaled = abs / u.factor;
+      const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
+      return `${sign}${scaled.toFixed(digits)} ${u.symbol}`;
+    }
+  }
+
+  return `${value.toExponential(2)} J`;
+}
+
+function flowTargetColor(targetId: string) {
+  if (targetId === OUTSIDE_TARGET_ID) return '#0B1B2B';
+  return getUnitById(targetId)?.color ?? '#666666';
+}
+
+function flowDirectionColor(flowValue: number) {
+  return flowValue > 0 ? '#e81a0c' : '#33cc33';
 }
 
 function setupCanvasSize() {
@@ -1542,5 +1602,34 @@ onBeforeUnmount(() => {
     rgb(255, 255, 0),
     rgb(255, 0, 0)
   );
+}
+
+.flow-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.flow-row {
+  display: grid;
+  grid-template-columns: 14px minmax(70px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.flow-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+}
+
+.flow-name {
+  font-weight: 500;
+}
+
+.flow-val {
+  font-variant-numeric: tabular-nums;
+  /*color: rgba(255, 255, 255, 0.75);*/
 }
 </style>
