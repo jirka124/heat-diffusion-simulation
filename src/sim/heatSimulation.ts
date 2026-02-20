@@ -1,0 +1,397 @@
+import {
+  SHARED_UNIT_ID,
+  createWorld,
+  defaultMaterials,
+  defaultUnits,
+  deleteMaterial,
+  stepWorld,
+  type Material,
+  type TempRange,
+  type Unit,
+  type World,
+} from 'src/sim/heatWorld';
+
+export type EndUnit = 'h' | 'd';
+
+export type SimulationConfig = {
+  w: number;
+  h: number;
+  initTemp: number;
+  dt: number;
+  simTicksPerSec: number;
+  startDayTimeMin: number;
+  endEnabled: boolean;
+  endValue: number;
+  endUnit: EndUnit;
+};
+
+export type MaterialTool = 'paint' | 'pick' | 'fill';
+export type UnitTool = 'assign' | 'pick' | 'fill' | 'clear';
+
+export type RuntimeUnitRow = {
+  id: string;
+  name: string;
+  color: string;
+  kind: Unit['params']['kind'];
+  schedule: { fromMin: number; toMin: number } | null;
+  home: boolean | null;
+  activeRange: TempRange;
+  avgT: number | null;
+  cells: number;
+  heaters: number;
+};
+
+export function createDefaultSimulationConfig(): SimulationConfig {
+  return {
+    w: 140,
+    h: 90,
+    initTemp: 18,
+    dt: 1,
+    simTicksPerSec: 200,
+    startDayTimeMin: 0,
+    endEnabled: true,
+    endValue: 30,
+    endUnit: 'h',
+  };
+}
+
+function clamp(v: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function isHomeNow(unit: Unit, secOfDay: number) {
+  if (unit.params.kind !== 'unit') return false;
+
+  const tMin = Math.floor(secOfDay / 60) % 1440;
+  const from = clamp(unit.params.homeFromMin, 0, 1439);
+  const to = clamp(unit.params.homeToMin, 0, 1439);
+
+  if (from === to) return true;
+  if (from < to) return tMin >= from && tMin < to;
+  return tMin >= from || tMin < to;
+}
+
+function getActiveRange(unit: Unit, secOfDay: number): TempRange {
+  if (unit.params.kind === 'shared') return unit.params.comfy;
+  return isHomeNow(unit, secOfDay) ? unit.params.home : unit.params.away;
+}
+
+export class HeatSimulation {
+  private worldRef: World | null = null;
+  private cfg: SimulationConfig;
+  private tickRef = 0;
+  private simTimeSecRef = 0;
+  private runningRef = false;
+  private simAccMs = 0;
+
+  constructor(initialConfig?: Partial<SimulationConfig>) {
+    this.cfg = { ...createDefaultSimulationConfig(), ...initialConfig };
+  }
+
+  get world() {
+    return this.worldRef;
+  }
+
+  get tick() {
+    return this.tickRef;
+  }
+
+  get simTimeSec() {
+    return this.simTimeSecRef;
+  }
+
+  get running() {
+    return this.runningRef;
+  }
+
+  get locked() {
+    return this.tickRef > 0;
+  }
+
+  setConfig(next: Partial<SimulationConfig>) {
+    this.cfg = { ...this.cfg, ...next };
+  }
+
+  get endSimSec(): number | null {
+    if (!this.cfg.endEnabled) return null;
+    const v = Number(this.cfg.endValue);
+    if (!Number.isFinite(v) || v <= 0) return null;
+    const mul = this.cfg.endUnit === 'd' ? 86400 : 3600;
+    return v * mul;
+  }
+
+  get secOfDay() {
+    const start = (this.cfg.startDayTimeMin ?? 0) * 60;
+    const s = (this.simTimeSecRef + start) % 86400;
+    return s < 0 ? s + 86400 : s;
+  }
+
+  get dayIndex() {
+    return Math.floor(this.simTimeSecRef / 86400);
+  }
+
+  setup() {
+    const w = Math.max(10, Math.min(500, Math.floor(this.cfg.w)));
+    const h = Math.max(10, Math.min(500, Math.floor(this.cfg.h)));
+
+    this.worldRef = createWorld({
+      w,
+      h,
+      initTemp: this.cfg.initTemp,
+      materials: defaultMaterials(),
+      units: defaultUnits(),
+      defaultMaterialId: 'air',
+      defaultUnitId: null,
+    });
+
+    this.tickRef = 0;
+    this.simTimeSecRef = 0;
+    this.runningRef = false;
+    this.simAccMs = 0;
+  }
+
+  resetTemperatureAndTime() {
+    if (!this.worldRef) return;
+    for (const c of this.worldRef.cells) {
+      c.T = this.cfg.initTemp;
+      c.tempEmitting = false;
+    }
+    this.tickRef = 0;
+    this.simTimeSecRef = 0;
+    this.runningRef = false;
+    this.simAccMs = 0;
+    this.worldRef.resetOptimisation();
+  }
+
+  toggleRun() {
+    this.runningRef = !this.runningRef;
+  }
+
+  stepOnce() {
+    if (!this.worldRef) return false;
+    if (!this.canStep()) {
+      this.enforceEndLimit();
+      return false;
+    }
+
+    stepWorld(this.worldRef, this.cfg.dt, this.secOfDay);
+    this.tickRef += 1;
+    this.simTimeSecRef += this.cfg.dt;
+    this.enforceEndLimit();
+    return true;
+  }
+
+  advanceFrame(frameMs: number) {
+    if (!this.worldRef || !this.runningRef) return false;
+    if (frameMs <= 0) return false;
+
+    this.simAccMs += frameMs;
+    const target = Math.max(1, this.cfg.simTicksPerSec);
+    const stepMs = 1000 / target;
+
+    if (this.simAccMs < stepMs) return false;
+    this.simAccMs = 0;
+    return this.stepOnce();
+  }
+
+  applyMaterialTool(index: number, tool: MaterialTool, selectedMaterialId: string): string | null {
+    if (!this.worldRef || this.locked) return null;
+    const cells = this.worldRef.cells;
+    const c = cells[index];
+    if (!c) return null;
+
+    if (tool === 'paint') {
+      if (c.materialId !== selectedMaterialId) {
+        c.materialId = selectedMaterialId;
+        this.worldRef.resetOptimisation();
+      }
+      return null;
+    }
+
+    if (tool === 'pick') {
+      return c.materialId;
+    }
+
+    this.floodFillMaterial(index, c.materialId, selectedMaterialId);
+    return null;
+  }
+
+  applyUnitTool(index: number, tool: UnitTool, selectedUnitId: string): string | null {
+    if (!this.worldRef || this.locked) return null;
+    const cells = this.worldRef.cells;
+    const c = cells[index];
+    if (!c) return null;
+
+    if (tool === 'assign') {
+      if (c.unitId !== selectedUnitId) {
+        c.unitId = selectedUnitId;
+        this.worldRef.resetOptimisation();
+      }
+      return null;
+    }
+
+    if (tool === 'clear') {
+      if (c.unitId != null) {
+        c.unitId = null;
+        this.worldRef.resetOptimisation();
+      }
+      return null;
+    }
+
+    if (tool === 'pick') {
+      return c.unitId ?? SHARED_UNIT_ID;
+    }
+
+    this.floodFillUnit(index, selectedUnitId);
+    return null;
+  }
+
+  upsertMaterial(material: Material) {
+    if (!this.worldRef || this.locked) return false;
+    this.worldRef.materials[material.id] = material;
+    this.worldRef.resetOptimisation();
+    return true;
+  }
+
+  removeMaterial(id: string, fallbackId = 'air') {
+    if (!this.worldRef || this.locked) return false;
+    if (id === 'air') return false;
+    deleteMaterial(this.worldRef, id, fallbackId);
+    this.worldRef.resetOptimisation();
+    return true;
+  }
+
+  addUnit(unit: Unit) {
+    if (!this.worldRef || this.locked) return false;
+    if (this.worldRef.units[unit.id]) return false;
+    if (unit.id === SHARED_UNIT_ID) return false;
+    this.worldRef.units[unit.id] = unit;
+    this.worldRef.resetOptimisation();
+    return true;
+  }
+
+  updateUnit(unit: Unit) {
+    if (!this.worldRef || this.locked) return false;
+    if (!this.worldRef.units[unit.id]) return false;
+    this.worldRef.units[unit.id] = unit;
+    this.worldRef.resetOptimisation();
+    return true;
+  }
+
+  removeUnit(id: string) {
+    if (!this.worldRef || this.locked) return false;
+    if (id === SHARED_UNIT_ID) return false;
+
+    delete this.worldRef.units[id];
+    for (const c of this.worldRef.cells) {
+      if (c.unitId === id) c.unitId = null;
+    }
+    this.worldRef.resetOptimisation();
+    return true;
+  }
+
+  getRuntimeRows(): RuntimeUnitRow[] {
+    if (!this.worldRef) return [];
+
+    const secOfDay = this.secOfDay;
+    return Object.values(this.worldRef.units)
+      .slice()
+      .sort((a, b) => {
+        if (a.id === SHARED_UNIT_ID) return -1;
+        if (b.id === SHARED_UNIT_ID) return 1;
+        return a.id.localeCompare(b.id);
+      })
+      .map((u) => ({
+        id: u.id,
+        name: u.name,
+        color: u.color,
+        kind: u.params.kind,
+        schedule:
+          u.params.kind === 'unit'
+            ? { fromMin: u.params.homeFromMin, toMin: u.params.homeToMin }
+            : null,
+        home: u.params.kind === 'unit' ? isHomeNow(u, secOfDay) : null,
+        activeRange: getActiveRange(u, secOfDay),
+        avgT: u.runtime ? u.runtime.avgTemp : null,
+        cells: u.runtime ? u.runtime.allCells.length : 0,
+        heaters: u.runtime ? u.runtime.heaterCells.length : 0,
+      }));
+  }
+
+  private canStep() {
+    const lim = this.endSimSec;
+    if (lim == null) return true;
+    return this.simTimeSecRef < lim;
+  }
+
+  private enforceEndLimit() {
+    const lim = this.endSimSec;
+    if (lim == null) return;
+    if (this.simTimeSecRef < lim) return;
+    this.simTimeSecRef = lim;
+    this.runningRef = false;
+  }
+
+  private floodFillMaterial(startIndex: number, fromId: string, toId: string) {
+    if (!this.worldRef || fromId === toId) return;
+
+    const { w, h, cells } = this.worldRef;
+    const visited = new Uint8Array(w * h);
+    const stack: number[] = [startIndex];
+
+    while (stack.length) {
+      const n = stack.pop();
+      if (n == null) continue;
+      if (visited[n]) continue;
+      visited[n] = 1;
+
+      if (cells[n].materialId !== fromId) continue;
+      cells[n].materialId = toId;
+
+      const x = n % w;
+      const y = (n / w) | 0;
+
+      if (x > 0) stack.push(n - 1);
+      if (x < w - 1) stack.push(n + 1);
+      if (y > 0) stack.push(n - w);
+      if (y < h - 1) stack.push(n + w);
+    }
+
+    this.worldRef.resetOptimisation();
+  }
+
+  private floodFillUnit(startIndex: number, toUnitId: string | null) {
+    if (!this.worldRef) return;
+
+    const { w, h, cells } = this.worldRef;
+    const fromMat = cells[startIndex].materialId;
+    const fromUnit = cells[startIndex].unitId;
+    if (fromUnit === toUnitId) return;
+
+    const visited = new Uint8Array(w * h);
+    const stack: number[] = [startIndex];
+
+    while (stack.length) {
+      const n = stack.pop();
+      if (n == null) continue;
+      if (visited[n]) continue;
+      visited[n] = 1;
+
+      const c = cells[n];
+      if (c.materialId !== fromMat) continue;
+      if (c.unitId !== fromUnit) continue;
+
+      c.unitId = toUnitId;
+
+      const x = n % w;
+      const y = (n / w) | 0;
+
+      if (x > 0) stack.push(n - 1);
+      if (x < w - 1) stack.push(n + 1);
+      if (y > 0) stack.push(n - w);
+      if (y < h - 1) stack.push(n + w);
+    }
+
+    this.worldRef.resetOptimisation();
+  }
+}
