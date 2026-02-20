@@ -40,6 +40,8 @@ export type RuntimeUnitRow = {
   avgT: number | null;
   cells: number;
   heaters: number;
+  comfortTick: number | null;
+  comfortAvg: number | null;
   heatFlows: Array<{
     targetId: string;
     targetName: string;
@@ -348,6 +350,8 @@ export class HeatSimulation {
         avgT: u.runtime ? u.runtime.avgTemp : null,
         cells: u.runtime ? u.runtime.allCells.length : 0,
         heaters: u.runtime ? u.runtime.heaterCells.length : 0,
+        comfortTick: u.runtime ? u.runtime.comfortTickScore : null,
+        comfortAvg: u.runtime ? u.runtime.comfortAvgScore : null,
       }));
   }
 

@@ -47,6 +47,10 @@ export type UnitRuntime = {
   boundaryTargetsByCell: Record<number, (string | null)[]>;
   heatFlowTick: Record<string, number>;
   heatFlowTotal: Record<string, number>;
+  comfortTickScore: number;
+  comfortScoreSum: number;
+  comfortScoreSamples: number;
+  comfortAvgScore: number;
 };
 
 export type Unit = {
@@ -326,6 +330,10 @@ function optimiseWorld(world: World) {
       boundaryTargetsByCell: {},
       heatFlowTick: {},
       heatFlowTotal: {},
+      comfortTickScore: 100,
+      comfortScoreSum: 0,
+      comfortScoreSamples: 0,
+      comfortAvgScore: 100,
     };
   }
 
@@ -459,6 +467,29 @@ function recomputeUnitComfyRanges(world: World, secOfDay: number) {
     if (!unit || !rt) continue;
 
     rt.comfyRange = getActiveRange(unit, secOfDay);
+  }
+}
+
+function computeComfortScore(avgTemp: number, range: TempRange) {
+  const deviation =
+    avgTemp < range.min ? range.min - avgTemp : avgTemp > range.max ? avgTemp - range.max : 0;
+  const halfBand = Math.max(0.5, (range.max - range.min) / 2);
+  const norm = deviation / (halfBand + 2);
+  const score = 100 * (1 - norm);
+  return clamp(score, 0, 100);
+}
+
+function recomputeUnitComfortScores(world: World) {
+  const unitsArr = Object.values(world.units);
+  for (let i = 0; i < unitsArr.length; i++) {
+    const rt = unitsArr[i]?.runtime;
+    if (!rt) continue;
+
+    const tickScore = computeComfortScore(rt.avgTemp, rt.comfyRange);
+    rt.comfortTickScore = tickScore;
+    rt.comfortScoreSum += tickScore;
+    rt.comfortScoreSamples += 1;
+    rt.comfortAvgScore = rt.comfortScoreSum / Math.max(1, rt.comfortScoreSamples);
   }
 }
 
@@ -612,6 +643,7 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
 
   recomputeUnitAvgTemps(world);
   recomputeUnitComfyRanges(world, secOfDay);
+  recomputeUnitComfortScores(world);
 
   // auto-control per-cell emitters by unit avgTemp + active comfy range
   // (only for cells assigned to a known unit)

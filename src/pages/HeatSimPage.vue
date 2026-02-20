@@ -161,6 +161,13 @@
                             - Heaters: <b>{{ r.heaters }}</b></span
                           >
                         </q-item-label>
+                        <q-item-label v-if="r.comfortTick != null" caption>
+                          Comfort:
+                          <b>{{ r.comfortTick.toFixed(0) }}/100</b>
+                          <span class="text-grey-6">
+                            (avg {{ (r.comfortAvg ?? 0).toFixed(0) }}/100)
+                          </span>
+                        </q-item-label>
                         <q-item-label v-if="r.heatFlows.length > 0" caption>
                           Flows (+out | -in)
                           <div class="flow-list">
@@ -922,6 +929,8 @@ const runtimeUnitRows = computed(() => {
     avgT: r.avgT,
     cells: r.cells,
     heaters: r.heaters,
+    comfortTick: r.comfortTick,
+    comfortAvg: r.comfortAvg,
     heatFlows: r.heatFlows,
   }));
 });
