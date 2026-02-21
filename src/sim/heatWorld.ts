@@ -766,12 +766,13 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
     const ci = cells[i];
     const cj = cells[j];
 
+    const Ti = ci.T;
+    const Tj = cj.T;
+    if (Ti === Tj) return;
+
     const mi = materials[ci.materialId];
     const mj = materials[cj.materialId];
     if (!mi || !mj) return;
-
-    const Ti = ci.T;
-    const Tj = cj.T;
 
     // conduction between cells:
     // G [W/K] = lambda_eff * A / L
