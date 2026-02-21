@@ -2,6 +2,7 @@
   <q-page class="row items-center justify-evenly">
     <router-link :to="{ path: '/heat' }">TO HEAT SIMULATION</router-link>
     <router-link :to="{ path: '/costs' }">TO COST ALLOCATION</router-link>
+    <router-link :to="{ path: '/compare' }">TO ALLOCATION COMPARISON</router-link>
     <example-component
       title="Example component"
       active
