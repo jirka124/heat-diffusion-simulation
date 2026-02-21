@@ -58,6 +58,26 @@ export type RuntimeUnitRow = {
   }>;
 };
 
+export type UnitResultExport = {
+  id: string;
+  name: string;
+  avgComfortScore: number | null;
+  totalEnergyProducedJ: number;
+  areaCells: number;
+  netHeatFlowTotalJByTarget: Record<string, number>;
+};
+
+export type SimulationResultsExport = {
+  version: 1;
+  name: string;
+  tick: number;
+  simulationLengthSec: number;
+  ended: boolean;
+  pausedForExport: boolean;
+  totalHouseHeatingEnergyJ: number;
+  units: UnitResultExport[];
+};
+
 export type ExportCell = {
   materialId: string;
   unitId: string | null;
@@ -508,6 +528,45 @@ export class HeatSimulation {
     if (this.simTimeSecRef < lim) return;
     this.simTimeSecRef = lim;
     this.runningRef = false;
+  }
+
+  exportResults(name: string): SimulationResultsExport | null {
+    if (!this.worldRef || this.tickRef <= 0) return null;
+
+    const pausedForExport = this.runningRef;
+    if (pausedForExport) {
+      this.runningRef = false;
+      this.simAccMs = 0;
+    }
+
+    const rows = this.getRuntimeRows();
+    const units: UnitResultExport[] = rows.map((row) => {
+      const netHeatFlowTotalJByTarget: Record<string, number> = {};
+
+      for (const flow of row.heatFlows) {
+        netHeatFlowTotalJByTarget[flow.targetId] = flow.total;
+      }
+
+      return {
+        id: row.id,
+        name: row.name,
+        avgComfortScore: row.comfortAvg ?? null,
+        totalEnergyProducedJ: row.emitterEnergyTotalJ ?? 0,
+        areaCells: row.cells,
+        netHeatFlowTotalJByTarget,
+      };
+    });
+
+    return {
+      version: 1,
+      name: name.trim() || 'simulation-results',
+      tick: this.tickRef,
+      simulationLengthSec: this.simTimeSecRef,
+      ended: this.endSimSec != null ? this.simTimeSecRef >= this.endSimSec : false,
+      pausedForExport,
+      totalHouseHeatingEnergyJ: units.reduce((sum, u) => sum + u.totalEnergyProducedJ, 0),
+      units,
+    };
   }
 
   private floodFillMaterial(startIndex: number, fromId: string, toId: string) {

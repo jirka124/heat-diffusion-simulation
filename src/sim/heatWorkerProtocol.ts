@@ -102,6 +102,11 @@ export type WorkerRequest =
       requestId: number;
       type: 'importSetup';
       setup: ExportSimulationSetup;
+    }
+  | {
+      requestId: number;
+      type: 'exportResults';
+      name: string;
     };
 
 export type WorkerResponse =

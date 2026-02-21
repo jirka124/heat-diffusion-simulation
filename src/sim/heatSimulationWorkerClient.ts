@@ -3,6 +3,7 @@ import type {
   ExportSimulationSetup,
   MaterialTool,
   SimulationConfig,
+  SimulationResultsExport,
   UnitTool,
 } from 'src/sim/heatSimulation';
 import type {
@@ -138,6 +139,10 @@ export class HeatSimulationWorkerClient {
 
   importSetup(setup: ExportSimulationSetup) {
     return this.withRequestId({ type: 'importSetup', setup }) as Promise<boolean>;
+  }
+
+  exportResults(name: string) {
+    return this.withRequestId({ type: 'exportResults', name }) as Promise<SimulationResultsExport | null>;
   }
 
   terminate() {

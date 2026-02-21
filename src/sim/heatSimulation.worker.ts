@@ -158,6 +158,14 @@ function handleRequest(msg: WorkerRequest) {
         if (ok) markDirtyAndFlush();
         return;
       }
+      case 'exportResults': {
+        const payload = simulation.exportResults(msg.name);
+        respondOk(msg.requestId, payload);
+        if (payload?.pausedForExport) {
+          markDirtyAndFlush();
+        }
+        return;
+      }
     }
   } catch (error) {
     respondError(msg.requestId, error);

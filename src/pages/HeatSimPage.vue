@@ -345,6 +345,26 @@
                   </div>
                 </div>
 
+                <div v-if="tick > 0" class="row q-col-gutter-sm q-mt-sm">
+                  <div class="col-8">
+                    <q-input
+                      v-model="resultsExportName"
+                      dense
+                      outlined
+                      label="Results export name"
+                    />
+                  </div>
+                  <div class="col-4">
+                    <q-btn
+                      class="full-width full-height"
+                      unelevated
+                      color="deep-orange"
+                      label="Export results"
+                      @click="exportResultsFile()"
+                    />
+                  </div>
+                </div>
+
                 <q-separator class="q-my-md" />
 
                 <div class="text-body2">
@@ -934,6 +954,7 @@ const cfg = reactive({
   ...createDefaultSimulationConfig(),
   renderFpsLimit: 12,
 });
+const resultsExportName = ref('heat-sim-results');
 const outsideSeriesInput = ref('');
 const outsideSeriesInvalid = ref(false);
 
@@ -1027,9 +1048,15 @@ function bumpWorld() {
   worldVersion.value += 1;
 }
 
-function getDownloadFileName() {
+function getDownloadFileName(prefix: string) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  return `heat-sim-setup-${stamp}.json`;
+  return `${prefix}-${stamp}.json`;
+}
+
+function sanitizeFileNamePart(name: string) {
+  const normalized = name.trim().replace(/\s+/g, '-');
+  const safe = normalized.replace(/[^a-zA-Z0-9._-]/g, '');
+  return safe || 'export';
 }
 
 function parseImportedSetup(raw: unknown): {
@@ -1089,7 +1116,31 @@ async function exportSetupFile() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = getDownloadFileName();
+  a.download = getDownloadFileName('heat-sim-setup');
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function exportResultsFile() {
+  if (!simulationClient || tick.value <= 0) return;
+
+  const name = resultsExportName.value.trim() || 'heat-sim-results';
+  const payload = await simulationClient.exportResults(name);
+  if (!payload) return;
+
+  const fileBase = sanitizeFileNamePart(name);
+  const data = {
+    ...payload,
+    exportedAt: new Date().toISOString(),
+  };
+
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = getDownloadFileName(fileBase);
   document.body.appendChild(a);
   a.click();
   a.remove();
