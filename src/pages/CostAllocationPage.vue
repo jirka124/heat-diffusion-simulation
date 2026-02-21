@@ -139,15 +139,87 @@
 
         <q-card class="q-mt-md">
           <q-card-section>
-            <div class="text-h6">Allocation Output</div>
-            <div class="text-caption text-grey-7">
-              Placeholder for future cost allocation results.
+            <div class="row items-center justify-between">
+              <div>
+                <div class="text-h6">Allocation Output</div>
+                <div class="text-caption text-grey-7">
+                  Includes payment happiness score and export for comparisons.
+                </div>
+              </div>
+              <q-btn
+                unelevated
+                color="primary"
+                label="Export allocation"
+                :disable="allocationRows.length === 0 || !resultData"
+                @click="exportAllocationResults"
+              />
             </div>
           </q-card-section>
           <q-separator />
-          <q-card-section>
+          <q-card-section v-if="allocationRows.length > 0">
+            <div class="text-caption text-grey-7 q-mb-sm">
+              Base sum: <b>{{ formatNumber(allocationMeta.baseTotalJ) }} J</b> |
+              Billable sum:
+              <b>{{ formatNumber(allocationMeta.billableTotalJ) }} J</b>
+            </div>
+            <div class="text-caption text-grey-7 q-mb-md">
+              Formula: <b>Base = Produced + Neighbor transfer</b>,
+              <b>Billable = Base + Outside adj + Shared</b>.
+              Neighbor transfer is positive when unit received net heat from other units, negative
+              when it sent net heat to them.
+            </div>
+            <q-markup-table dense flat bordered>
+              <thead>
+                <tr>
+                  <th class="text-left">Unit</th>
+                  <th class="text-right">
+                    Produced [J]
+                    <q-icon name="help_outline" size="14px" class="q-ml-xs text-grey-6">
+                      <q-tooltip>Directly produced heating energy from the simulation export.</q-tooltip>
+                    </q-icon>
+                  </th>
+                  <th class="text-right">
+                    Neighbor transfer [J]
+                    <q-icon name="help_outline" size="14px" class="q-ml-xs text-grey-6">
+                      <q-tooltip>Net unit-to-unit transfer: received minus sent.</q-tooltip>
+                    </q-icon>
+                  </th>
+                  <th class="text-right">Base [J]</th>
+                  <th class="text-right">Outside adj [J]</th>
+                  <th class="text-right">Shared [J]</th>
+                  <th class="text-right">Billable [J]</th>
+                  <th class="text-right">Share [%]</th>
+                  <th class="text-right">Comfort</th>
+                  <th class="text-right">Pay happiness</th>
+                  <th class="text-right">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in allocationRows" :key="row.id">
+                  <td>{{ row.name }} ({{ row.id }})</td>
+                  <td class="text-right">{{ formatNumber(row.producedJ) }}</td>
+                  <td class="text-right">{{ formatSignedNumber(row.neighborTransferJ) }}</td>
+                  <td class="text-right">{{ formatNumber(row.baseCostJ) }}</td>
+                  <td class="text-right">{{ formatSignedNumber(row.outsideAdjustmentJ) }}</td>
+                  <td class="text-right">{{ formatNumber(row.sharedCostJ) }}</td>
+                  <td class="text-right">{{ formatNumber(row.billableJ) }}</td>
+                  <td class="text-right">{{ formatPercent(row.shareRatio) }}</td>
+                  <td class="text-right">
+                    {{ row.comfortScore == null ? '-' : formatNumber(row.comfortScore) }}
+                  </td>
+                  <td class="text-right">{{ formatNumber(row.paymentHappinessScore) }}</td>
+                  <td class="text-right"><b>{{ formatNumber(row.finalCost) }}</b></td>
+                </tr>
+              </tbody>
+            </q-markup-table>
+          </q-card-section>
+          <q-card-section v-else>
             <div class="allocation-placeholder">
-              Output panel reserved for the allocation algorithm.
+              <span v-if="!resultData">Import results to compute allocation.</span>
+              <span v-else-if="effectiveTotalCost == null">
+                Enter valid pricing input to compute allocation.
+              </span>
+              <span v-else>No payable units detected.</span>
             </div>
           </q-card-section>
         </q-card>
@@ -159,7 +231,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { OUTSIDE_TARGET_ID, SHARED_UNIT_ID } from 'src/sim/heatWorld';
-import type { SimulationResultsExport } from 'src/sim/heatSimulation';
+import type { SimulationResultsExport, UnitResultExport } from 'src/sim/heatSimulation';
 
 const importInputEl = ref<HTMLInputElement | null>(null);
 const importedFileName = ref('');
@@ -203,8 +275,248 @@ const effectiveTotalCostLabel = computed(() =>
   effectiveTotalCost.value == null ? '-' : formatNumber(effectiveTotalCost.value),
 );
 
+type AllocationRow = {
+  id: string;
+  name: string;
+  producedJ: number;
+  comfortScore: number | null;
+  neighborTransferJ: number;
+  baseCostJ: number;
+  outsideAdjustmentJ: number;
+  sharedCostJ: number;
+  rawBillableJ: number;
+  billableJ: number;
+  shareRatio: number;
+  selfPayCost: number;
+  paymentHappinessScore: number;
+  finalCost: number;
+};
+
+const SHARED_FLOW_TILT = 0.5;
+const SHARED_WEIGHT_MIN = 0.5;
+const SHARED_WEIGHT_MAX = 1.5;
+
+function parseOptionalId(v: string): string | null {
+  const t = v.trim();
+  return t ? t : null;
+}
+
+function flowOutTo(from: UnitResultExport, targetId: string | null): number {
+  if (!targetId) return 0;
+  const raw = from.netHeatFlowTotalJByTarget[targetId] ?? 0;
+  if (!Number.isFinite(raw)) return 0;
+  return Math.max(0, raw);
+}
+
+function clamp(v: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function scorePaymentHappiness(finalCost: number, selfPayCost: number) {
+  if (selfPayCost <= 1e-9) return finalCost <= 1e-9 ? 100 : 0;
+  const relDiff = Math.abs(finalCost - selfPayCost) / selfPayCost;
+  return clamp(100 * (1 - relDiff), 0, 100);
+}
+
+const allocationComputation = computed(() => {
+  const data = resultData.value;
+  const totalCost = effectiveTotalCost.value;
+  if (!data || totalCost == null) {
+    return {
+      rows: [] as AllocationRow[],
+      meta: { baseTotalJ: 0, billableTotalJ: 0 },
+    };
+  }
+
+  const configuredSharedId = parseOptionalId(sharedUnitId.value);
+  const configuredOutsideId = parseOptionalId(outsideTargetId.value);
+  const sharedUnit = configuredSharedId
+    ? data.units.find((u) => u.id === configuredSharedId) ?? null
+    : null;
+
+  const payerUnits = data.units.filter((u) => u.id !== sharedUnit?.id);
+  if (payerUnits.length === 0) {
+    return {
+      rows: [] as AllocationRow[],
+      meta: { baseTotalJ: 0, billableTotalJ: 0 },
+    };
+  }
+
+  const n = payerUnits.length;
+  const rowMap = new Map<string, AllocationRow>();
+  for (const unit of payerUnits) {
+    rowMap.set(unit.id, {
+      id: unit.id,
+      name: unit.name,
+      producedJ: unit.totalEnergyProducedJ,
+      comfortScore: unit.avgComfortScore,
+      neighborTransferJ: 0,
+      baseCostJ: unit.totalEnergyProducedJ,
+      outsideAdjustmentJ: 0,
+      sharedCostJ: 0,
+      rawBillableJ: 0,
+      billableJ: 0,
+      shareRatio: 0,
+      selfPayCost: 0,
+      paymentHappinessScore: 0,
+      finalCost: 0,
+    });
+  }
+
+  for (const from of payerUnits) {
+    for (const to of payerUnits) {
+      if (from.id === to.id) continue;
+      const sent = flowOutTo(from, to.id);
+      if (sent <= 0) continue;
+      const sender = rowMap.get(from.id);
+      const receiver = rowMap.get(to.id);
+      if (!sender || !receiver) continue;
+      sender.neighborTransferJ -= sent;
+      receiver.neighborTransferJ += sent;
+      sender.baseCostJ -= sent;
+      receiver.baseCostJ += sent;
+    }
+  }
+
+  if (configuredOutsideId) {
+    const losses = new Map<string, number>();
+    for (const unit of payerUnits) {
+      losses.set(unit.id, flowOutTo(unit, configuredOutsideId));
+    }
+
+    for (const unit of payerUnits) {
+      const loss = losses.get(unit.id) ?? 0;
+      const row = rowMap.get(unit.id);
+      if (!row) continue;
+      if (n > 1) {
+        row.outsideAdjustmentJ -= 0.2 * loss;
+        let gain = 0;
+        for (const other of payerUnits) {
+          if (other.id === unit.id) continue;
+          gain += (0.2 * (losses.get(other.id) ?? 0)) / (n - 1);
+        }
+        row.outsideAdjustmentJ += gain;
+      }
+    }
+  }
+
+  if (sharedUnit) {
+    const sharedBase = Math.max(0, sharedUnit.totalEnergyProducedJ);
+    const weightParts = payerUnits.map((u) => {
+      const toUnit = flowOutTo(sharedUnit, u.id);
+      const fromUnit = flowOutTo(u, sharedUnit.id);
+      const tiltRaw = toUnit - fromUnit;
+      const denom = Math.max(sharedBase, 1);
+      const weight = clamp(
+        1 + SHARED_FLOW_TILT * (tiltRaw / denom),
+        SHARED_WEIGHT_MIN,
+        SHARED_WEIGHT_MAX,
+      );
+      return { id: u.id, weight };
+    });
+
+    const weightSum = weightParts.reduce((sum, p) => sum + p.weight, 0);
+    if (weightSum > 0 && sharedBase > 0) {
+      for (const p of weightParts) {
+        const row = rowMap.get(p.id);
+        if (!row) continue;
+        row.sharedCostJ = (sharedBase * p.weight) / weightSum;
+      }
+    }
+  }
+
+  const rows = Array.from(rowMap.values()).map((row) => {
+    row.rawBillableJ = row.baseCostJ + row.outsideAdjustmentJ + row.sharedCostJ;
+    row.billableJ = Math.max(0, row.rawBillableJ);
+    return row;
+  });
+
+  const baseTotalJ = rows.reduce((sum, r) => sum + r.rawBillableJ, 0);
+  const billableTotalJ = rows.reduce((sum, r) => sum + r.billableJ, 0);
+  const producedTotalJ = rows.reduce((sum, r) => sum + r.producedJ, 0);
+
+  if (billableTotalJ > 0) {
+    for (const row of rows) {
+      row.shareRatio = row.billableJ / billableTotalJ;
+      row.finalCost = totalCost * row.shareRatio;
+    }
+  } else {
+    for (const row of rows) {
+      row.shareRatio = 1 / rows.length;
+      row.finalCost = totalCost / rows.length;
+    }
+  }
+
+  if (producedTotalJ > 0) {
+    for (const row of rows) {
+      row.selfPayCost = totalCost * (row.producedJ / producedTotalJ);
+      row.paymentHappinessScore = scorePaymentHappiness(row.finalCost, row.selfPayCost);
+    }
+  } else {
+    for (const row of rows) {
+      row.selfPayCost = totalCost / rows.length;
+      row.paymentHappinessScore = scorePaymentHappiness(row.finalCost, row.selfPayCost);
+    }
+  }
+
+  rows.sort((a, b) => b.finalCost - a.finalCost);
+  return { rows, meta: { baseTotalJ, billableTotalJ } };
+});
+
+const allocationRows = computed(() => allocationComputation.value.rows);
+const allocationMeta = computed(() => allocationComputation.value.meta);
+
 function formatNumber(value: number) {
   return new Intl.NumberFormat('cs-CZ', { maximumFractionDigits: 4 }).format(value);
+}
+
+function formatPercent(ratio: number) {
+  return `${(ratio * 100).toFixed(2)} %`;
+}
+
+function formatSignedNumber(value: number) {
+  const v = formatNumber(value);
+  return value > 0 ? `+${v}` : v;
+}
+
+function getDownloadFileName(prefix: string) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${prefix}-${stamp}.json`;
+}
+
+function sanitizeFileNamePart(name: string) {
+  const normalized = name.trim().replace(/\s+/g, '-');
+  const safe = normalized.replace(/[^a-zA-Z0-9._-]/g, '');
+  return safe || 'allocation';
+}
+
+function exportAllocationResults() {
+  if (!resultData.value || allocationRows.value.length === 0) return;
+
+  const payload = {
+    version: 1,
+    name: resultData.value.name,
+    generatedAt: new Date().toISOString(),
+    effectiveTotalCost: effectiveTotalCost.value,
+    units: allocationRows.value.map((row) => ({
+      id: row.id,
+      name: row.name,
+      share: row.shareRatio,
+      cost: row.finalCost,
+      comfortScore: row.comfortScore,
+      paymentHappinessScore: row.paymentHappinessScore,
+    })),
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = getDownloadFileName(`${sanitizeFileNamePart(resultData.value.name)}-allocation`);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function openImportDialog() {
