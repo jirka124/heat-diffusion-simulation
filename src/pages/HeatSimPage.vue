@@ -317,6 +317,32 @@
                       @click="stepOnce()"
                     />
                   </div>
+                  <div class="col-6">
+                    <q-btn
+                      class="full-width"
+                      unelevated
+                      color="teal"
+                      label="Export setup"
+                      @click="exportSetupFile()"
+                    />
+                  </div>
+                  <div class="col-6">
+                    <q-btn
+                      class="full-width"
+                      unelevated
+                      color="indigo"
+                      label="Import setup"
+                      :disable="locked || running"
+                      @click="openImportSetupDialog()"
+                    />
+                    <input
+                      ref="importSetupInputEl"
+                      type="file"
+                      accept=".json,application/json"
+                      style="display: none"
+                      @change="onImportSetupSelected"
+                    />
+                  </div>
                 </div>
 
                 <q-separator class="q-my-md" />
@@ -892,7 +918,7 @@ import {
   type UnitParams,
 } from 'src/sim/heatWorld';
 import { createDefaultSimulationConfig } from 'src/sim/heatSimulation';
-import type { SimulationConfig } from 'src/sim/heatSimulation';
+import type { ExportSimulationSetup, SimulationConfig } from 'src/sim/heatSimulation';
 import { HeatSimulationWorkerClient } from 'src/sim/heatSimulationWorkerClient';
 import type { RuntimeUnitRow } from 'src/sim/heatSimulation';
 import type { HeatWorldSnapshot, SimulationSnapshot } from 'src/sim/heatWorkerProtocol';
@@ -900,6 +926,7 @@ import type { HeatWorldSnapshot, SimulationSnapshot } from 'src/sim/heatWorkerPr
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 const viewportEl = ref<HTMLDivElement | null>(null);
 const contentEl = ref<HTMLDivElement | null>(null);
+const importSetupInputEl = ref<HTMLInputElement | null>(null);
 let imgData: ImageData | null = null;
 
 const tab = ref<'sim' | 'edit' | 'mats' | 'units'>('sim');
@@ -998,6 +1025,108 @@ async function onOutsideSeriesFileSelected(fileModel: File | readonly File[] | n
 
 function bumpWorld() {
   worldVersion.value += 1;
+}
+
+function getDownloadFileName() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `heat-sim-setup-${stamp}.json`;
+}
+
+function parseImportedSetup(raw: unknown): {
+  setup: ExportSimulationSetup;
+  renderFpsLimit: number | null;
+} | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const payload = raw as Record<string, unknown>;
+  const nestedSetup = payload.setup;
+  const setup =
+    nestedSetup && typeof nestedSetup === 'object'
+      ? (nestedSetup as ExportSimulationSetup)
+      : (payload as ExportSimulationSetup);
+
+  if (
+    setup.version !== 1 ||
+    !setup.config ||
+    !setup.materials ||
+    !setup.units ||
+    !Array.isArray(setup.cells)
+  ) {
+    return null;
+  }
+
+  const renderFpsRaw = payload.renderFpsLimit;
+  const renderFpsLimit =
+    typeof renderFpsRaw === 'number' && Number.isFinite(renderFpsRaw)
+      ? Math.max(1, Math.min(60, Math.floor(renderFpsRaw)))
+      : null;
+
+  return { setup, renderFpsLimit };
+}
+
+function clearImportInput() {
+  if (importSetupInputEl.value) importSetupInputEl.value.value = '';
+}
+
+function openImportSetupDialog() {
+  if (locked.value || running.value) return;
+  importSetupInputEl.value?.click();
+}
+
+async function exportSetupFile() {
+  if (!simulationClient) return;
+
+  const setup = await simulationClient.exportSetup();
+  if (!setup) return;
+
+  const payload = {
+    ...setup,
+    exportedAt: new Date().toISOString(),
+    renderFpsLimit: Math.max(1, Math.min(60, Math.floor(cfg.renderFpsLimit || 12))),
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = getDownloadFileName();
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function onImportSetupSelected(evt: Event) {
+  const input = evt.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file || !simulationClient) return;
+  if (locked.value || running.value) {
+    clearImportInput();
+    return;
+  }
+
+  try {
+    const text = await file.text();
+    const parsed = parseImportedSetup(JSON.parse(text));
+    if (!parsed) throw new Error('Invalid setup format');
+
+    const ok = await simulationClient.importSetup(parsed.setup);
+    if (!ok) throw new Error('Setup import failed');
+
+    Object.assign(cfg, parsed.setup.config);
+    if (parsed.renderFpsLimit != null) {
+      cfg.renderFpsLimit = parsed.renderFpsLimit;
+    }
+    outsideSeriesInput.value = JSON.stringify(cfg.outsideTempSeries);
+    outsideSeriesInvalid.value = false;
+    selectedMaterialId.value = 'air';
+    selectedUnitId.value = SHARED_UNIT_ID;
+    requestRender(true);
+  } catch {
+    window.alert('Import failed. Check file format and ensure simulation is not locked.');
+  } finally {
+    clearImportInput();
+  }
 }
 
 const autoScale = ref(true);

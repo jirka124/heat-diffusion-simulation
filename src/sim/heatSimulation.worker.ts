@@ -148,6 +148,16 @@ function handleRequest(msg: WorkerRequest) {
         if (ok) markDirtyAndFlush();
         return;
       }
+      case 'exportSetup': {
+        respondOk(msg.requestId, simulation.exportSetup());
+        return;
+      }
+      case 'importSetup': {
+        const ok = simulation.importSetup(msg.setup);
+        respondOk(msg.requestId, ok);
+        if (ok) markDirtyAndFlush();
+        return;
+      }
     }
   } catch (error) {
     respondError(msg.requestId, error);

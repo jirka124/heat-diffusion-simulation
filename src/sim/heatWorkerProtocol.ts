@@ -4,6 +4,7 @@ import type {
   Unit,
 } from 'src/sim/heatWorld';
 import type {
+  ExportSimulationSetup,
   MaterialTool,
   RuntimeUnitRow,
   SimulationConfig,
@@ -92,6 +93,15 @@ export type WorkerRequest =
       requestId: number;
       type: 'removeUnit';
       id: string;
+    }
+  | {
+      requestId: number;
+      type: 'exportSetup';
+    }
+  | {
+      requestId: number;
+      type: 'importSetup';
+      setup: ExportSimulationSetup;
     };
 
 export type WorkerResponse =

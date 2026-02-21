@@ -58,6 +58,21 @@ export type RuntimeUnitRow = {
   }>;
 };
 
+export type ExportCell = {
+  materialId: string;
+  unitId: string | null;
+};
+
+export type ExportUnit = Omit<Unit, 'runtime'>;
+
+export type ExportSimulationSetup = {
+  version: 1;
+  config: SimulationConfig;
+  materials: Record<string, Material>;
+  units: Record<string, ExportUnit>;
+  cells: ExportCell[];
+};
+
 export function createDefaultSimulationConfig(): SimulationConfig {
   return {
     w: 140,
@@ -94,6 +109,15 @@ function isHomeNow(unit: Unit, secOfDay: number) {
 function getActiveRange(unit: Unit, secOfDay: number): TempRange {
   if (unit.params.kind === 'shared') return unit.params.comfy;
   return isHomeNow(unit, secOfDay) ? unit.params.home : unit.params.away;
+}
+
+function cloneUnitForExport(unit: Unit): ExportUnit {
+  return {
+    id: unit.id,
+    name: unit.name,
+    color: unit.color,
+    params: unit.params,
+  };
 }
 
 export class HeatSimulation {
@@ -326,6 +350,89 @@ export class HeatSimulation {
       if (c.unitId === id) c.unitId = null;
     }
     this.worldRef.resetOptimisation();
+    return true;
+  }
+
+  exportSetup(): ExportSimulationSetup | null {
+    if (!this.worldRef) return null;
+
+    const config: SimulationConfig = {
+      ...this.cfg,
+      // World shape must match exported cell array even if user edited cfg.w/h
+      // but did not press Setup yet.
+      w: this.worldRef.w,
+      h: this.worldRef.h,
+      outsideTempSeries: [...this.cfg.outsideTempSeries],
+    };
+
+    return {
+      version: 1,
+      config,
+      materials: Object.fromEntries(
+        Object.entries(this.worldRef.materials).map(([id, m]) => [id, { ...m }]),
+      ),
+      units: Object.fromEntries(
+        Object.entries(this.worldRef.units).map(([id, unit]) => [id, cloneUnitForExport(unit)]),
+      ),
+      cells: this.worldRef.cells.map((c) => ({
+        materialId: c.materialId,
+        unitId: c.unitId,
+      })),
+    };
+  }
+
+  importSetup(setup: ExportSimulationSetup) {
+    if (this.locked || this.runningRef) return false;
+    if (!setup || setup.version !== 1) return false;
+
+    const nextCfg: SimulationConfig = {
+      ...createDefaultSimulationConfig(),
+      ...setup.config,
+      outsideTempSeries: [...(setup.config?.outsideTempSeries ?? [])],
+    };
+    const w = Math.max(10, Math.min(500, Math.floor(nextCfg.w)));
+    const h = Math.max(10, Math.min(500, Math.floor(nextCfg.h)));
+
+    if (!setup.cells || setup.cells.length !== w * h) return false;
+    if (!setup.materials?.air || !setup.materials?.outside) return false;
+    if (!setup.units?.[SHARED_UNIT_ID]) return false;
+
+    const materials: Record<string, Material> = Object.fromEntries(
+      Object.entries(setup.materials).map(([id, m]) => [id, { ...m }]),
+    );
+    const units: Record<string, Unit> = Object.fromEntries(
+      Object.entries(setup.units).map(([id, unit]) => [id, cloneUnitForExport(unit)]),
+    );
+
+    const world = createWorld({
+      w,
+      h,
+      initTemp: nextCfg.initTemp,
+      materials,
+      units,
+      defaultMaterialId: 'air',
+      defaultUnitId: null,
+    });
+
+    for (const [i, src] of setup.cells.entries()) {
+      if (!materials[src.materialId]) return false;
+      if (src.unitId != null && !units[src.unitId]) return false;
+      const dst = world.cells[i];
+      if (!dst) return false;
+      dst.materialId = src.materialId;
+      dst.unitId = src.unitId;
+      dst.T = nextCfg.initTemp;
+      dst.tempEmitting = false;
+    }
+
+    this.cfg = nextCfg;
+    this.worldRef = world;
+    this.tickRef = 0;
+    this.simTimeSecRef = 0;
+    this.runningRef = false;
+    this.simAccMs = 0;
+    this.worldRef.resetOptimisation();
+    this.syncOutsideEmitTemp();
     return true;
   }
 

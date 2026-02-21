@@ -1,5 +1,6 @@
 import type { Material, Unit } from 'src/sim/heatWorld';
 import type {
+  ExportSimulationSetup,
   MaterialTool,
   SimulationConfig,
   UnitTool,
@@ -129,6 +130,14 @@ export class HeatSimulationWorkerClient {
 
   removeUnit(id: string) {
     return this.withRequestId({ type: 'removeUnit', id }) as Promise<boolean>;
+  }
+
+  exportSetup() {
+    return this.withRequestId({ type: 'exportSetup' }) as Promise<ExportSimulationSetup | null>;
+  }
+
+  importSetup(setup: ExportSimulationSetup) {
+    return this.withRequestId({ type: 'importSetup', setup }) as Promise<boolean>;
   }
 
   terminate() {
