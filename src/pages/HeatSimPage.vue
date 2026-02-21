@@ -192,7 +192,12 @@
                       - Remaining: <b>{{ fmtSimTime(Math.max(0, endSimSec - simTimeSec)) }}</b>
                     </span>
                   </div>
-
+                  <div class="text-caption text-grey-7 q-mb-sm">
+                    House heating:
+                    <b>{{ formatPowerSI(houseHeatingPowerW) }}</b>
+                    now | total
+                    <b>{{ formatEnergySI(houseHeatingTotalJ) }}</b>
+                  </div>
                   <q-list bordered separator class="q-mt-sm">
                     <q-item v-for="r in runtimeUnitRows" :key="r.id">
                       <q-item-section avatar>
@@ -222,6 +227,17 @@
                           <span class="text-grey-6">
                             (avg {{ (r.comfortAvg ?? 0).toFixed(0) }}/100)
                           </span>
+                        </q-item-label>
+                        <q-item-label
+                          v-if="r.heaters > 0 || (r.emitterEnergyTotalJ ?? 0) > 0"
+                          caption
+                        >
+                          Heating energy:
+                          <b>{{ formatPowerSI(r.emitterPowerTickW ?? 0) }}</b>
+                          now |
+                          <b>{{ formatEnergySI(r.emitterEnergyTickJ ?? 0) }}</b>
+                          / tick | total
+                          <b>{{ formatEnergySI(r.emitterEnergyTotalJ ?? 0) }}</b>
                         </q-item-label>
                         <q-item-label v-if="r.heatFlows.length > 0" caption>
                           Flows (+out | -in)
@@ -391,8 +407,9 @@
                         <span class="text-caption text-grey-7">({{ m.id }})</span>
                       </q-item-label>
                       <q-item-label caption>
-                        cap={{ m.cap }} - k={{ m.k }}
-                        <span v-if="m.emitTemp != null"> - emit={{ m.emitTemp }} C @</span>
+                        rho={{ m.rho }} kg/m3 - cp={{ m.cp }} J/(kg*K) - lambda={{ m.lambda }} W/(m*K)
+                        <span v-if="m.emitTemp != null"> - emit={{ m.emitTemp }} C</span>
+                        <span v-if="m.emitPowerW != null"> @{{ m.emitPowerW }} W</span>
                       </q-item-label>
                     </q-item-section>
 
@@ -630,11 +647,32 @@
           <q-input v-model="matForm.name" label="Name" dense outlined />
 
           <div class="row q-col-gutter-sm">
-            <div class="col-6">
-              <q-input v-model.number="matForm.cap" type="number" label="cap" dense outlined />
+            <div class="col-4">
+              <q-input
+                v-model.number="matForm.rho"
+                type="number"
+                label="rho (kg/m3)"
+                dense
+                outlined
+              />
             </div>
-            <div class="col-6">
-              <q-input v-model.number="matForm.k" type="number" label="k" dense outlined />
+            <div class="col-4">
+              <q-input
+                v-model.number="matForm.cp"
+                type="number"
+                label="cp (J/kg*K)"
+                dense
+                outlined
+              />
+            </div>
+            <div class="col-4">
+              <q-input
+                v-model.number="matForm.lambda"
+                type="number"
+                label="lambda (W/m*K)"
+                dense
+                outlined
+              />
             </div>
           </div>
 
@@ -659,10 +697,21 @@
                 clearable
               />
             </div>
+            <div class="col-12">
+              <q-input
+                v-model.number="matForm.emitPowerW"
+                type="number"
+                label="emitPower (W) - empty = 0"
+                dense
+                outlined
+                clearable
+                min="0"
+              />
+            </div>
           </div>
 
           <div class="text-caption text-grey-7">
-            Tip: Heater = emitTemp 50-70, AC = emitTemp 16-20
+            Tip: Heater = emitTemp 50-70 + emitPower 500-2000 W, AC = emitTemp 16-20
           </div>
         </q-card-section>
 
@@ -1018,6 +1067,12 @@ const secOfDay = computed(() => {
   return s < 0 ? s + 86400 : s;
 });
 const dayTimeLabel = computed(() => fmtHmsFromSec(secOfDay.value));
+const houseHeatingPowerW = computed(() =>
+  runtimeRowsRaw.value.reduce((sum, r) => sum + (r.emitterPowerTickW ?? 0), 0),
+);
+const houseHeatingTotalJ = computed(() =>
+  runtimeRowsRaw.value.reduce((sum, r) => sum + (r.emitterEnergyTotalJ ?? 0), 0),
+);
 
 const runtimeUnitRows = computed(() => {
   void worldVersion.value;
@@ -1034,6 +1089,9 @@ const runtimeUnitRows = computed(() => {
     heaters: r.heaters,
     comfortTick: r.comfortTick,
     comfortAvg: r.comfortAvg,
+    emitterPowerTickW: r.emitterPowerTickW,
+    emitterEnergyTickJ: r.emitterEnergyTickJ,
+    emitterEnergyTotalJ: r.emitterEnergyTotalJ,
     heatFlows: r.heatFlows,
   }));
 });
@@ -1049,10 +1107,12 @@ const matDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({ open: fals
 const matForm = reactive({
   id: '',
   name: '',
-  cap: 100,
-  k: 0.2,
+  rho: 1000,
+  cp: 1000,
+  lambda: 0.2,
   color: '#888888',
   emitTemp: null as number | null,
+  emitPowerW: null as number | null,
 });
 
 const unitDialog = reactive<{ open: boolean; mode: 'add' | 'edit' }>({ open: false, mode: 'add' });
@@ -1172,6 +1232,27 @@ function fmtHmsFromSec(secOfDayValue: number) {
 
 function fmtRange(r: TempRange) {
   return `${r.min}-${r.max} C`;
+}
+
+function formatPowerSI(value: number) {
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  const units: Array<{ factor: number; symbol: string }> = [
+    { factor: 1e9, symbol: 'GW' },
+    { factor: 1e6, symbol: 'MW' },
+    { factor: 1e3, symbol: 'kW' },
+    { factor: 1, symbol: 'W' },
+  ];
+
+  for (const u of units) {
+    if (abs >= u.factor) {
+      const scaled = abs / u.factor;
+      const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
+      return `${sign}${scaled.toFixed(digits)} ${u.symbol}`;
+    }
+  }
+
+  return `${sign}${abs.toFixed(2)} W`;
 }
 
 function formatEnergySI(value: number) {
@@ -1416,7 +1497,11 @@ async function applyPaint(i: number) {
 
   const opId = ++paintOpId;
   if (tab.value === 'units') {
-    const picked = await simulationClient.applyUnitTool(i, unitPaintTool.value, selectedUnitId.value);
+    const picked = await simulationClient.applyUnitTool(
+      i,
+      unitPaintTool.value,
+      selectedUnitId.value,
+    );
     if (picked && opId === paintOpId) selectedUnitId.value = picked;
   } else {
     const picked = await simulationClient.applyMaterialTool(
@@ -1464,10 +1549,12 @@ function openAdd() {
   matDialog.mode = 'add';
   matForm.id = '';
   matForm.name = '';
-  matForm.cap = 150;
-  matForm.k = 0.2;
+  matForm.rho = 1000;
+  matForm.cp = 1000;
+  matForm.lambda = 0.2;
   matForm.color = '#888888';
   matForm.emitTemp = null;
+  matForm.emitPowerW = null;
   matDialog.open = true;
 }
 
@@ -1479,10 +1566,12 @@ function openEdit(id: string) {
   matDialog.mode = 'edit';
   matForm.id = m.id;
   matForm.name = m.name;
-  matForm.cap = m.cap;
-  matForm.k = m.k;
+  matForm.rho = m.rho;
+  matForm.cp = m.cp;
+  matForm.lambda = m.lambda;
   matForm.color = m.color;
   matForm.emitTemp = m.emitTemp;
+  matForm.emitPowerW = m.emitPowerW ?? null;
   matDialog.open = true;
 }
 
@@ -1503,10 +1592,12 @@ async function saveMaterial() {
   const material: Material = {
     id,
     name: matForm.name.trim() || id,
-    cap: Math.max(1e-9, Number(matForm.cap) || 1),
-    k: Math.max(0, Number(matForm.k) || 0),
+    rho: Math.max(1e-9, Number(matForm.rho) || 1),
+    cp: Math.max(1e-9, Number(matForm.cp) || 1),
+    lambda: Math.max(0, Number(matForm.lambda) || 0),
     color: matForm.color?.trim() || '#888888',
     emitTemp: matForm.emitTemp == null ? null : Number(matForm.emitTemp),
+    emitPowerW: matForm.emitPowerW == null ? null : Math.max(0, Number(matForm.emitPowerW) || 0),
   };
 
   if (!(await simulationClient.upsertMaterial(material))) return;

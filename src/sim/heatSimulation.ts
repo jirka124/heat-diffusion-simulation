@@ -46,6 +46,10 @@ export type RuntimeUnitRow = {
   heaters: number;
   comfortTick: number | null;
   comfortAvg: number | null;
+  emitterPowerTickW: number | null;
+  emitterEnergyTickJ: number | null;
+  emitterEnergyTotalJ: number | null;
+  emitterEnergyTotalKWh: number | null;
   heatFlows: Array<{
     targetId: string;
     targetName: string;
@@ -378,6 +382,10 @@ export class HeatSimulation {
         heaters: u.runtime ? u.runtime.heaterCells.length : 0,
         comfortTick: u.runtime ? u.runtime.comfortTickScore : null,
         comfortAvg: u.runtime ? u.runtime.comfortAvgScore : null,
+        emitterPowerTickW: u.runtime ? u.runtime.emitterPowerTickW : null,
+        emitterEnergyTickJ: u.runtime ? u.runtime.emitterEnergyTickJ : null,
+        emitterEnergyTotalJ: u.runtime ? u.runtime.emitterEnergyTotalJ : null,
+        emitterEnergyTotalKWh: u.runtime ? u.runtime.emitterEnergyTotalJ / 3_600_000 : null,
       }));
   }
 

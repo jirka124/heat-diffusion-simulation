@@ -4,9 +4,13 @@ export type Material = {
   id: string;
   name: string;
 
-  // thermal properties (relative units are OK)
-  cap: number; // heat capacity (m*c) for a cell
-  k: number; // conductivity-ish -> used to form edge conductance
+  // thermal properties in SI:
+  // rho: density [kg/m^3]
+  // cp: specific heat capacity [J/(kg*K)]
+  // lambda: thermal conductivity [W/(m*K)]
+  rho: number;
+  cp: number;
+  lambda: number;
 
   // editor / infrastructure view
   color: string; // hex like "#AABBCC"
@@ -15,6 +19,9 @@ export type Material = {
   // If set, each step will relax the cell temperature toward emitTemp.
   // Positive = heating, negative (or just lower target) = cooling.
   emitTemp: number | null;
+  // Electrical power draw while emitter is active.
+  // Energy per step is computed as emitPowerW * dt (J).
+  emitPowerW: number | null;
 };
 
 export type Cell = {
@@ -41,6 +48,7 @@ export type UnitParams =
 export type UnitRuntime = {
   allCells: number[];
   heaterCells: number[];
+  totalCapJPerK: number;
   avgTemp: number;
   comfyRange: TempRange;
   // cellIndex -> directional targets (left, right, up, down)
@@ -51,6 +59,9 @@ export type UnitRuntime = {
   comfortScoreSum: number;
   comfortScoreSamples: number;
   comfortAvgScore: number;
+  emitterPowerTickW: number;
+  emitterEnergyTickJ: number;
+  emitterEnergyTotalJ: number;
 };
 
 export type Unit = {
@@ -95,6 +106,21 @@ export function inBounds(pos: Vec2, w: number, h: number) {
 function harmonicMean(a: number, b: number) {
   const eps = 1e-12;
   return (2 * a * b) / (a + b + eps);
+}
+
+export const CELL_SIZE_M = 0.25;
+export const SLAB_DEPTH_M = 2.7;
+const CELL_VOLUME_M3 = CELL_SIZE_M * CELL_SIZE_M * SLAB_DEPTH_M;
+const EDGE_AREA_M2 = CELL_SIZE_M * SLAB_DEPTH_M;
+const EDGE_LENGTH_M = CELL_SIZE_M;
+
+function cellCapJPerK(m: Material) {
+  return Math.max(1e-9, m.rho * m.cp * CELL_VOLUME_M3);
+}
+
+function edgeConductanceWPerK(a: Material, b: Material) {
+  const lambdaEff = harmonicMean(a.lambda, b.lambda);
+  return lambdaEff * (EDGE_AREA_M2 / EDGE_LENGTH_M);
 }
 
 export function defaultUnits(): Record<string, Unit> {
@@ -142,75 +168,94 @@ export function defaultMaterials(): Record<string, Material> {
   const air: Material = {
     id: 'air',
     name: 'Air',
-    cap: 40,
-    k: 1.0,
+    rho: 1.225,
+    cp: 1005,
+    // Effective conductivity for a coarse grid (includes unresolved air mixing).
+    lambda: 2.5,
     color: '#2D3A4A',
     emitTemp: null,
+    emitPowerW: null,
   };
 
   const brick: Material = {
     id: 'brick',
     name: 'Brick wall',
-    cap: 400,
-    k: 0.25,
+    rho: 1800,
+    cp: 840,
+    lambda: 0.72,
     color: '#7B4E2B',
     emitTemp: null,
+    emitPowerW: null,
   };
 
   const concrete: Material = {
     id: 'concrete',
     name: 'Concrete',
-    cap: 650,
-    k: 0.45,
+    rho: 2300,
+    cp: 880,
+    lambda: 1.7,
     color: '#6E7076',
     emitTemp: null,
+    emitPowerW: null,
   };
 
   const insulation: Material = {
     id: 'eps',
     name: 'Insulation (EPS)',
-    cap: 90,
-    k: 0.03,
+    rho: 20,
+    cp: 1300,
+    lambda: 0.035,
     color: '#D8D3A8',
     emitTemp: null,
+    emitPowerW: null,
   };
 
   const windowMat: Material = {
     id: 'window',
     name: 'Window',
-    cap: 120,
-    k: 1.6,
+    rho: 2500,
+    cp: 750,
+    lambda: 1.0,
     color: '#7FB3D5',
     emitTemp: null,
+    emitPowerW: null,
   };
 
   // Heater/AC as materials (targets)
   const heater: Material = {
     id: 'heater',
     name: 'Heater',
-    cap: 120,
-    k: 1.2,
+    // Device-like effective thermal mass, not full-cell filled steel.
+    rho: 40,
+    cp: 500,
+    lambda: 3.0,
     color: '#C0392B',
     emitTemp: 55, // target temperature
+    emitPowerW: 1200,
   };
 
   const ac: Material = {
     id: 'ac',
     name: 'AC',
-    cap: 120,
-    k: 1.2,
+    // Device-like effective thermal mass.
+    rho: 35,
+    cp: 900,
+    lambda: 3.0,
     color: '#1F7AE0',
     emitTemp: 16,
+    emitPowerW: 900,
   };
 
   // Outside boundary as a "material" is optional; you can just paint it on edges.
   const outside: Material = {
     id: 'outside',
     name: 'Outside',
-    cap: 999999, // huge so it behaves almost fixed
-    k: 1.0,
+    rho: 1e9, // huge so it behaves almost fixed
+    cp: 1000,
+    lambda: 0.3,
     color: '#0B1B2B',
     emitTemp: 0, // behaves like fixed outside temperature
+    emitPowerW: 0,
   };
 
   return {
@@ -325,6 +370,7 @@ function optimiseWorld(world: World) {
     unit.runtime = {
       allCells: [],
       heaterCells: [],
+      totalCapJPerK: 0,
       avgTemp: 0,
       comfyRange: { min: -Infinity, max: Infinity },
       boundaryTargetsByCell: {},
@@ -334,6 +380,9 @@ function optimiseWorld(world: World) {
       comfortScoreSum: 0,
       comfortScoreSamples: 0,
       comfortAvgScore: 100,
+      emitterPowerTickW: 0,
+      emitterEnergyTickJ: 0,
+      emitterEnergyTotalJ: 0,
     };
   }
 
@@ -355,7 +404,10 @@ function optimiseWorld(world: World) {
       unit.runtime?.allCells.push(cellInd);
 
       const material = world.materials[cell.materialId];
-      if (material?.emitTemp && material?.emitTemp > 0) {
+      if (unit.runtime && material?.emitTemp == null) {
+        unit.runtime.totalCapJPerK += cellCapJPerK(material);
+      }
+      if (material?.emitTemp != null) {
         unit.runtime?.heaterCells.push(cellInd);
       }
     }
@@ -433,6 +485,30 @@ function shouldEmitterBeOn(emitTemp: number, avgTemp: number, range: TempRange, 
   return false;
 }
 
+function emitterPowerFactor(emitTemp: number, avgTemp: number, range: TempRange) {
+  const band = Math.max(1e-9, range.max - range.min);
+
+  // Heater-like source: full power below min, taper to zero at max.
+  if (emitTemp >= range.max) {
+    if (avgTemp <= range.min) return 1;
+    if (avgTemp >= range.max) return 0;
+    return clamp((range.max - avgTemp) / band, 0, 1);
+  }
+
+  // Cooler-like source: full power above max, taper to zero at min.
+  if (emitTemp <= range.min) {
+    if (avgTemp >= range.max) return 1;
+    if (avgTemp <= range.min) return 0;
+    return clamp((avgTemp - range.min) / band, 0, 1);
+  }
+
+  // Neutral target inside comfy range:
+  // power only outside comfy band, then ramps with distance.
+  if (avgTemp < range.min) return clamp((range.min - avgTemp) / band, 0, 1);
+  if (avgTemp > range.max) return clamp((avgTemp - range.max) / band, 0, 1);
+  return 0;
+}
+
 function recomputeUnitAvgTemps(world: World) {
   const unitsArr = Object.values(world.units);
   for (let i = 0, len = unitsArr.length; i < len; i++) {
@@ -448,7 +524,7 @@ function recomputeUnitAvgTemps(world: World) {
     let sum = 0;
     for (let j = 0; j < cellCount; j++) {
       const cellInd = unit.runtime.allCells[j];
-      if (!cellInd) continue;
+      if (cellInd == null) continue;
 
       const cell = world.cells[cellInd];
       if (!cell) continue;
@@ -493,12 +569,118 @@ function recomputeUnitComfortScores(world: World) {
   }
 }
 
+function updateEmitterStates(world: World) {
+  const { cells, materials, units } = world;
+  const n = cells.length;
+
+  // auto-control per-cell emitters by unit avgTemp + active comfy range
+  for (let i = 0; i < n; i++) {
+    const c = cells[i];
+    const m = materials[c.materialId];
+    if (!m || m.emitTemp == null) continue;
+    if (!c.unitId) continue;
+
+    const unit = units[c.unitId];
+    const rt = unit?.runtime;
+    if (!unit || !rt) continue;
+
+    c.tempEmitting = shouldEmitterBeOn(m.emitTemp, rt.avgTemp, rt.comfyRange, c.tempEmitting);
+  }
+}
+
+type EmitterRequest = {
+  unitId: string;
+  cellIndex: number;
+  dir: 1 | -1;
+  rawPowerW: number;
+};
+
+function buildEmitterRequests(world: World): EmitterRequest[] {
+  const requests: EmitterRequest[] = [];
+  const { cells, materials, units } = world;
+
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    if (!c?.unitId || !c.tempEmitting) continue;
+
+    const m = materials[c.materialId];
+    if (!m || m.emitTemp == null) continue;
+
+    const unit = units[c.unitId];
+    const rt = unit?.runtime;
+    if (!rt) continue;
+
+    const emitPowerW = Math.max(0, m.emitPowerW ?? 0);
+    if (emitPowerW <= 0) continue;
+
+    const dirSign = Math.sign(m.emitTemp - c.T);
+    if (dirSign === 0) continue;
+
+    const powerScale = emitterPowerFactor(m.emitTemp, rt.avgTemp, rt.comfyRange);
+    const rawPowerW = emitPowerW * powerScale;
+    if (rawPowerW <= 0) continue;
+
+    requests.push({
+      unitId: c.unitId,
+      cellIndex: i,
+      dir: dirSign > 0 ? 1 : -1,
+      rawPowerW,
+    });
+  }
+
+  return requests;
+}
+
+function computeUnitPowerScales(
+  world: World,
+  requests: EmitterRequest[],
+  dt: number,
+): Record<string, { heat: number; cool: number }> {
+  const sums: Record<string, { heat: number; cool: number }> = {};
+  for (let i = 0; i < requests.length; i++) {
+    const req = requests[i];
+    const cur = (sums[req.unitId] ??= { heat: 0, cool: 0 });
+    if (req.dir > 0) cur.heat += req.rawPowerW;
+    else cur.cool += req.rawPowerW;
+  }
+
+  const scales: Record<string, { heat: number; cool: number }> = {};
+  const safeDt = Math.max(1e-9, dt);
+  const gain = 0.12;
+  const units = Object.values(world.units);
+
+  for (let i = 0; i < units.length; i++) {
+    const u = units[i];
+    const rt = u?.runtime;
+    if (!u || !rt) continue;
+
+    const raw = sums[u.id] ?? { heat: 0, cool: 0 };
+    if (raw.heat <= 0 && raw.cool <= 0) continue;
+
+    const target = (rt.comfyRange.min + rt.comfyRange.max) / 2;
+    const err = target - rt.avgTemp;
+    const cap = Math.max(1e-9, rt.totalCapJPerK);
+    const requiredPowerW = (Math.abs(err) * cap * gain) / safeDt;
+
+    const heatScale =
+      err > 0 && raw.heat > 0 ? clamp(requiredPowerW / Math.max(raw.heat, 1e-9), 0, 1) : 0;
+    const coolScale =
+      err < 0 && raw.cool > 0 ? clamp(requiredPowerW / Math.max(raw.cool, 1e-9), 0, 1) : 0;
+
+    scales[u.id] = { heat: heatScale, cool: coolScale };
+  }
+
+  return scales;
+}
+
 function resetHeatFlowTick(world: World) {
   const unitsArr = Object.values(world.units);
   for (let i = 0; i < unitsArr.length; i++) {
     const rt = unitsArr[i]?.runtime;
     if (!rt) continue;
     rt.heatFlowTick = {};
+    rt.emitterPowerTickW = 0;
+    rt.emitterEnergyTickJ = 0;
   }
 }
 
@@ -516,6 +698,18 @@ function addHeatFlow(world: World, fromUnitId: string, targetId: string, amount:
 
   rt.heatFlowTick[targetId] = (rt.heatFlowTick[targetId] ?? 0) + amount;
   rt.heatFlowTotal[targetId] = (rt.heatFlowTotal[targetId] ?? 0) + amount;
+}
+
+function addEmitterConsumption(world: World, unitId: string, powerW: number, dt: number) {
+  const rt = world.units[unitId]?.runtime;
+  if (!rt) return;
+  if (!Number.isFinite(powerW) || powerW <= 0) return;
+  if (!Number.isFinite(dt) || dt <= 0) return;
+
+  const energyJ = powerW * dt;
+  rt.emitterPowerTickW += powerW;
+  rt.emitterEnergyTickJ += energyJ;
+  rt.emitterEnergyTotalJ += energyJ;
 }
 
 function recordInterUnitHeatFlow(world: World, i: number, j: number, q: number) {
@@ -548,7 +742,9 @@ function recordInterUnitHeatFlow(world: World, i: number, j: number, q: number) 
  * One simulation step:
  * 1) diffuse energy between neighbors4 using per-edge conductance derived from materials k
  * 2) update temperature using per-cell cap
- * 3) apply material emitters (heater/AC/outside) as relaxation toward emitTemp
+ * 3) apply material emitters
+ *    - infrastructure emitters without unit can still pin temperature
+ *    - unit emitters add/remove energy by power (emitPowerW * dt)
  */
 export function stepWorld(world: World, dt: number, secOfDay = 0) {
   const { w, h, cells, units, materials } = world;
@@ -577,8 +773,9 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
     const Ti = ci.T;
     const Tj = cj.T;
 
-    // conductance between cells derived from both materials
-    const g = harmonicMean(mi.k, mj.k);
+    // conduction between cells:
+    // G [W/K] = lambda_eff * A / L
+    const g = edgeConductanceWPerK(mi, mj);
 
     // energy transferred this step
     const q = g * (Ti - Tj) * dt;
@@ -612,11 +809,16 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
     const m = materials[c.materialId];
     if (!m) continue;
 
-    const cap = Math.max(1e-9, m.cap);
+    const cap = cellCapJPerK(m);
     c.T += dQ[i] / cap;
   }
 
-  // apply fixed/emitter temperatures
+  // Use up-to-date unit averages/ranges for this step's emitter control.
+  recomputeUnitAvgTemps(world);
+  recomputeUnitComfyRanges(world, secOfDay);
+  updateEmitterStates(world);
+
+  // apply fixed infrastructure emitters (outside, etc.)
   for (let i = 0; i < n; i++) {
     const c = cells[i];
     const m = materials[c.materialId];
@@ -635,30 +837,35 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
       c.T = m.emitTemp;
       continue;
     }
+  }
 
-    if (c.tempEmitting) {
-      c.T = m.emitTemp;
-    }
+  // apply unit emitters using unit-level demand budgeting
+  const emitterRequests = buildEmitterRequests(world);
+  const unitPowerScales = computeUnitPowerScales(world, emitterRequests, dt);
+  for (let i = 0; i < emitterRequests.length; i++) {
+    const req = emitterRequests[i];
+    const c = cells[req.cellIndex];
+    if (!c || !c.unitId) continue;
+    const m = materials[c.materialId];
+    if (!m) continue;
+
+    const scale = unitPowerScales[c.unitId];
+    const unitScale = req.dir > 0 ? (scale?.heat ?? 0) : (scale?.cool ?? 0);
+    const effectivePowerW = req.rawPowerW * unitScale;
+    if (effectivePowerW <= 0) continue;
+
+    const cap = cellCapJPerK(m);
+    const qEmitter = effectivePowerW * dt * req.dir;
+    c.T += qEmitter / cap;
+    addEmitterConsumption(world, c.unitId, effectivePowerW, dt);
   }
 
   recomputeUnitAvgTemps(world);
   recomputeUnitComfyRanges(world, secOfDay);
   recomputeUnitComfortScores(world);
 
-  // auto-control per-cell emitters by unit avgTemp + active comfy range
-  // (only for cells assigned to a known unit)
-  for (let i = 0; i < n; i++) {
-    const c = cells[i];
-    const m = materials[c.materialId];
-    if (!m || m.emitTemp == null) continue;
-    if (!c.unitId) continue;
-
-    const unit = units[c.unitId];
-    const rt = unit?.runtime;
-    if (!unit || !rt) continue;
-
-    c.tempEmitting = shouldEmitterBeOn(m.emitTemp, rt.avgTemp, rt.comfyRange, c.tempEmitting);
-  }
+  // update state for next step using post-emitter temperatures
+  updateEmitterStates(world);
 }
 
 export function getMinMaxT(world: World) {
