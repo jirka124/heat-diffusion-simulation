@@ -1,46 +1,74 @@
 <template>
-  <q-page class="row items-center justify-evenly">
-    <router-link :to="{ path: '/heat' }">TO HEAT SIMULATION</router-link>
-    <router-link :to="{ path: '/costs' }">TO COST ALLOCATION</router-link>
-    <router-link :to="{ path: '/compare' }">TO ALLOCATION COMPARISON</router-link>
-    <example-component
-      title="Example component"
-      active
-      :todos="todos"
-      :meta="meta"
-    ></example-component>
+  <q-page class="q-pa-md index-page">
+    <div class="text-h4 q-mb-sm">Heat Diffusion Toolset</div>
+    <div class="text-subtitle2 text-grey-7 q-mb-lg">
+      Pick where you want to continue.
+    </div>
+
+    <div class="row q-col-gutter-md">
+      <div v-for="item in entries" :key="item.to" class="col-12 col-md-4">
+        <q-card class="nav-card cursor-pointer" clickable v-ripple @click="goTo(item.to)">
+          <q-card-section class="row items-center q-gutter-sm">
+            <q-icon :name="item.icon" size="28px" color="primary" />
+            <div class="text-h6">{{ item.title }}</div>
+          </q-card-section>
+          <q-card-section class="text-body2 text-grey-7">
+            {{ item.caption }}
+          </q-card-section>
+          <q-separator />
+          <q-card-actions align="right">
+            <q-btn flat color="primary" label="Open" :to="item.to" />
+          </q-card-actions>
+        </q-card>
+      </div>
+    </div>
   </q-page>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
-import type { Todo, Meta } from 'components/models';
-import ExampleComponent from 'components/ExampleComponent.vue';
+import { useRouter } from 'vue-router';
 
-const todos = ref<Todo[]>([
-  {
-    id: 1,
-    content: 'ct1',
-  },
-  {
-    id: 2,
-    content: 'ct2',
-  },
-  {
-    id: 3,
-    content: 'ct3',
-  },
-  {
-    id: 4,
-    content: 'ct4',
-  },
-  {
-    id: 5,
-    content: 'ct5',
-  },
-]);
+const router = useRouter();
 
-const meta = ref<Meta>({
-  totalCount: 1200,
-});
+const entries = [
+  {
+    title: 'Heat Simulation',
+    caption: 'Create and run thermal simulation experiments.',
+    icon: 'device_thermostat',
+    to: '/heat',
+  },
+  {
+    title: 'Cost Allocation',
+    caption: 'Compute cost split from exported simulation results.',
+    icon: 'calculate',
+    to: '/costs',
+  },
+  {
+    title: 'Comparison',
+    caption: 'Compare multiple allocation outputs side-by-side.',
+    icon: 'insights',
+    to: '/compare',
+  },
+];
+
+function goTo(to: string) {
+  void router.push(to);
+}
 </script>
+
+<style scoped>
+.index-page {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.nav-card {
+  height: 100%;
+  transition: transform 0.14s ease, box-shadow 0.14s ease;
+}
+
+.nav-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.16);
+}
+</style>

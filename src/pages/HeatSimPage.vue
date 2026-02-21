@@ -4,15 +4,6 @@
       <!-- LEFT PANEL -->
       <div class="col-12 col-md-4">
         <q-card>
-          <q-card-section>
-            <div class="text-h6">Heat Diffusion v2</div>
-            <div class="text-caption text-grey-7">
-              Materials per cell + paint editor + heater/AC as material emitters
-            </div>
-          </q-card-section>
-
-          <q-separator />
-
           <q-card-section class="q-gutter-md">
             <q-tabs v-model="tab" dense>
               <q-tab name="sim" label="Simulation" />
