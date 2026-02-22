@@ -969,7 +969,6 @@ let forcedRender = false;
 let lastRenderTs = 0;
 let fpsFrames = 0;
 let fpsLastTs = 0;
-let mmCounter = 0;
 
 function applySnapshot(snapshot: SimulationSnapshot) {
   const prevW = world.value?.w ?? null;
@@ -1550,11 +1549,7 @@ function render() {
 
   let mn = minT.value;
   let mx = maxT.value;
-  if (
-    (viewMode.value === 'temp' || viewMode.value === 'combo') &&
-    autoScale.value &&
-    ++mmCounter % 10 === 0
-  ) {
+  if ((viewMode.value === 'temp' || viewMode.value === 'combo') && autoScale.value) {
     const mm = getMinMaxSnapshot(world.value);
     mn = mm.min;
     mx = mm.max;
