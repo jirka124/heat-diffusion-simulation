@@ -270,6 +270,45 @@
                       </q-item-section>
                     </q-item>
                   </q-list>
+
+                  <q-toggle
+                    v-model="showZoneDebug"
+                    label="Zone debug (connected parts)"
+                    class="q-mt-sm"
+                  />
+                  <q-list v-if="showZoneDebug" bordered separator class="q-mt-sm">
+                    <q-item v-for="u in unitZoneDebugRows" :key="`zone-debug-${u.id}`">
+                      <q-item-section avatar>
+                        <div class="mat-swatch" :style="{ background: u.color }" />
+                      </q-item-section>
+                      <q-item-section>
+                        <q-item-label>
+                          {{ u.name }}
+                          <span class="text-caption text-grey-7">({{ u.id }})</span>
+                        </q-item-label>
+                        <q-item-label caption>
+                          Zones: <b>{{ u.zoneCount }}</b> - Cells: <b>{{ u.cells }}</b> - Heaters:
+                          <b>{{ u.heaters }}</b>
+                        </q-item-label>
+                        <q-item-label v-if="u.zones.length > 0" caption>
+                          <div class="zone-debug-list">
+                            <div
+                              v-for="z in u.zones"
+                              :key="`${u.id}-z-${z.index}`"
+                              class="zone-debug-row"
+                            >
+                              <span>Z{{ z.index + 1 }}</span>
+                              <span>cells {{ z.cells }}</span>
+                              <span>heaters {{ z.heaters }}</span>
+                              <span>avg {{ z.avgT.toFixed(1) }} C</span>
+                              <span>min {{ z.minT.toFixed(1) }} C</span>
+                              <span>max {{ z.maxT.toFixed(1) }} C</span>
+                            </div>
+                          </div>
+                        </q-item-label>
+                      </q-item-section>
+                    </q-item>
+                  </q-list>
                 </div>
 
                 <div class="row q-col-gutter-sm q-mt-sm">
@@ -970,6 +1009,7 @@ let simulationClient: HeatSimulationWorkerClient | null = null;
 const world = ref<HeatWorldSnapshot | null>(null);
 const runtimeRowsRaw = ref<RuntimeUnitRow[]>([]);
 const worldVersion = ref(0);
+const showZoneDebug = ref(false);
 
 const tick = ref(0);
 const simTimeSec = ref(0);
@@ -1285,6 +1325,126 @@ const runtimeUnitRows = computed(() => {
     emitterEnergyTotalJ: r.emitterEnergyTotalJ,
     heatFlows: r.heatFlows,
   }));
+});
+
+type ZoneDebugStat = {
+  index: number;
+  cells: number;
+  heaters: number;
+  avgT: number;
+  minT: number;
+  maxT: number;
+};
+
+type UnitZoneDebugRow = {
+  id: string;
+  name: string;
+  color: string;
+  zoneCount: number;
+  cells: number;
+  heaters: number;
+  zones: ZoneDebugStat[];
+};
+
+const unitZoneDebugRows = computed<UnitZoneDebugRow[]>(() => {
+  void worldVersion.value;
+  if (!showZoneDebug.value || !world.value) return [];
+
+  const snapshot = world.value;
+  const { w, h, cells, materials, units } = snapshot;
+  const n = w * h;
+  const visited = new Uint8Array(n);
+
+  const unitStats: Record<string, UnitZoneDebugRow> = {};
+  const stack: number[] = [];
+
+  for (let i = 0; i < n; i++) {
+    if (visited[i]) continue;
+    const start = cells[i];
+    const unitId = start?.unitId;
+    if (!start || !unitId || !units[unitId]) continue;
+
+    stack.length = 0;
+    stack.push(i);
+
+    let zoneCells = 0;
+    let zoneHeaters = 0;
+    let sumT = 0;
+    let minT = Number.POSITIVE_INFINITY;
+    let maxT = Number.NEGATIVE_INFINITY;
+
+    while (stack.length > 0) {
+      const idx = stack.pop();
+      if (idx == null || visited[idx]) continue;
+      const c = cells[idx];
+      if (!c || c.unitId !== unitId) continue;
+      visited[idx] = 1;
+
+      zoneCells += 1;
+      sumT += c.T;
+      if (c.T < minT) minT = c.T;
+      if (c.T > maxT) maxT = c.T;
+
+      const m = materials[c.materialId];
+      if (m?.emitTemp != null && Number.isFinite(m.emitTemp)) {
+        zoneHeaters += 1;
+      }
+
+      const x = idx % w;
+      const y = (idx / w) | 0;
+      if (x > 0) stack.push(idx - 1);
+      if (x < w - 1) stack.push(idx + 1);
+      if (y > 0) stack.push(idx - w);
+      if (y < h - 1) stack.push(idx + w);
+    }
+
+    if (zoneCells <= 0) continue;
+
+    const unitMeta = units[unitId];
+    const row =
+      unitStats[unitId] ??
+      (unitStats[unitId] = {
+        id: unitMeta.id,
+        name: unitMeta.name,
+        color: unitMeta.color,
+        zoneCount: 0,
+        cells: 0,
+        heaters: 0,
+        zones: [],
+      });
+
+    row.zoneCount += 1;
+    row.cells += zoneCells;
+    row.heaters += zoneHeaters;
+    row.zones.push({
+      index: row.zones.length,
+      cells: zoneCells,
+      heaters: zoneHeaters,
+      avgT: sumT / zoneCells,
+      minT,
+      maxT,
+    });
+  }
+
+  const order = runtimeRowsRaw.value.map((r) => r.id);
+  const rows = Object.values(unitStats);
+  rows.sort((a, b) => {
+    const ai = order.indexOf(a.id);
+    const bi = order.indexOf(b.id);
+    if (ai !== -1 || bi !== -1) {
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    }
+    return a.id.localeCompare(b.id);
+  });
+  rows.forEach((r) => {
+    r.zones.sort((a, b) => b.cells - a.cells);
+    r.zones.forEach((z, idx) => {
+      z.index = idx;
+    });
+  });
+  return rows;
 });
 
 const viewModeLabel = computed(() => {
@@ -1838,5 +1998,19 @@ onBeforeUnmount(() => {
 .flow-val {
   font-variant-numeric: tabular-nums;
   /*color: rgba(255, 255, 255, 0.75);*/
+}
+
+.zone-debug-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.zone-debug-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
 }
 </style>
