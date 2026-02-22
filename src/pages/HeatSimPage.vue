@@ -991,6 +991,10 @@ function applySnapshot(snapshot: SimulationSnapshot) {
   requestRender();
 }
 
+function getRenderFpsLimit() {
+  return Math.max(1, Math.min(60, Math.floor(cfg.renderFpsLimit || 12)));
+}
+
 function getSimulationConfig(): Partial<SimulationConfig> {
   return {
     w: cfg.w,
@@ -1100,7 +1104,7 @@ async function exportSetupFile() {
   const payload = {
     ...setup,
     exportedAt: new Date().toISOString(),
-    renderFpsLimit: Math.max(1, Math.min(60, Math.floor(cfg.renderFpsLimit || 12))),
+    renderFpsLimit: getRenderFpsLimit(),
   };
 
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -1625,7 +1629,7 @@ function loop(ts: number) {
   if (!lastTs) lastTs = ts;
   lastTs = ts;
 
-  const limit = Math.max(1, Math.min(60, Math.floor(cfg.renderFpsLimit || 12)));
+  const limit = getRenderFpsLimit();
   const interval = 1000 / limit;
   if (needsRender && (forcedRender || ts - lastRenderTs >= interval)) {
     forcedRender = false;
@@ -1918,10 +1922,18 @@ watch(
   },
 );
 
+watch(
+  () => cfg.renderFpsLimit,
+  () => {
+    void simulationClient?.setSnapshotFpsLimit(getRenderFpsLimit());
+  },
+);
+
 onMounted(async () => {
   outsideSeriesInput.value = JSON.stringify(cfg.outsideTempSeries);
   simulationClient = new HeatSimulationWorkerClient(applySnapshot);
   await simulationClient.init(getSimulationConfig());
+  await simulationClient.setSnapshotFpsLimit(getRenderFpsLimit());
   await setup();
   rafId.value = requestAnimationFrame(loop);
   window.addEventListener('keydown', onKeyDown);

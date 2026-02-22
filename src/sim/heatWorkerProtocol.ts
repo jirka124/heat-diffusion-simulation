@@ -40,6 +40,11 @@ export type WorkerRequest =
     }
   | {
       requestId: number;
+      type: 'setSnapshotFpsLimit';
+      fpsLimit: number;
+    }
+  | {
+      requestId: number;
       type: 'setup';
     }
   | {

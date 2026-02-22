@@ -79,6 +79,10 @@ export class HeatSimulationWorkerClient {
     return this.withRequestId({ type: 'setConfig', config }) as Promise<boolean>;
   }
 
+  setSnapshotFpsLimit(fpsLimit: number) {
+    return this.withRequestId({ type: 'setSnapshotFpsLimit', fpsLimit }) as Promise<boolean>;
+  }
+
   setup() {
     return this.withRequestId({ type: 'setup' }) as Promise<boolean>;
   }

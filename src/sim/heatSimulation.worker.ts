@@ -11,12 +11,26 @@ import type {
 
 const LOOP_MS = 4;
 const IDLE_LOOP_MS = 50;
-const SNAPSHOT_MIN_MS = 33;
+const DEFAULT_SNAPSHOT_FPS_LIMIT = 12;
+const MIN_SNAPSHOT_FPS_LIMIT = 1;
+const MAX_SNAPSHOT_FPS_LIMIT = 60;
+const PERF_LOG = false;
 
 let simulation = new HeatSimulation();
 let lastLoopTs = performance.now();
 let lastSnapshotTs = 0;
+let snapshotMinMs = 1000 / DEFAULT_SNAPSHOT_FPS_LIMIT;
 let dirty = true;
+
+function clampSnapshotFpsLimit(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_SNAPSHOT_FPS_LIMIT;
+  return Math.max(MIN_SNAPSHOT_FPS_LIMIT, Math.min(MAX_SNAPSHOT_FPS_LIMIT, Math.floor(value)));
+}
+
+function setSnapshotFpsLimit(fpsLimit: number) {
+  const fps = clampSnapshotFpsLimit(fpsLimit);
+  snapshotMinMs = 1000 / fps;
+}
 
 function toWorldSnapshot(world: World | null): HeatWorldSnapshot | null {
   if (!world) return null;
@@ -45,7 +59,7 @@ function post(data: WorkerResponse) {
 
 function emitSnapshot(force = false) {
   const now = performance.now();
-  if (!force && now - lastSnapshotTs < SNAPSHOT_MIN_MS) return;
+  if (!force && now - lastSnapshotTs < snapshotMinMs) return;
   lastSnapshotTs = now;
   dirty = false;
   post({ type: 'snapshot', snapshot: createSnapshot() });
@@ -77,6 +91,10 @@ function handleRequest(msg: WorkerRequest) {
         return;
       case 'setConfig':
         simulation.setConfig(msg.config);
+        respondOk(msg.requestId, true);
+        return;
+      case 'setSnapshotFpsLimit':
+        setSnapshotFpsLimit(msg.fpsLimit);
         respondOk(msg.requestId, true);
         return;
       case 'setup':
@@ -181,12 +199,21 @@ function loop() {
   const dtMs = now - lastLoopTs;
   lastLoopTs = now;
 
-  const changed = simulation.advanceFrame(dtMs);
+  const loopBudgetMs = Math.max(1, snapshotMinMs);
+  const changed = simulation.advanceFrame(dtMs, loopBudgetMs);
+  const now2 = performance.now();
   if (changed) {
     dirty = true;
     emitSnapshot(false);
   } else if (dirty && !simulation.running) {
     emitSnapshot(false);
+  }
+  const now3 = performance.now();
+
+  if (PERF_LOG) {
+    console.log(
+      `between loops: ${dtMs.toFixed(2)}ms. advance frame: ${(now2 - now).toFixed(2)}. emit?: ${(now3 - now2).toFixed(2)}`,
+    );
   }
 
   setTimeout(loop, simulation.running ? 0 : IDLE_LOOP_MS);

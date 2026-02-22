@@ -264,17 +264,32 @@ export class HeatSimulation {
     outside.emitTemp = this.getOutsideEmitTemp();
   }
 
-  advanceFrame(frameMs: number) {
+  advanceFrame(frameMs: number, maxWorkMs = 10000) {
     if (!this.worldRef || !this.runningRef) return false;
     if (frameMs <= 0) return false;
 
     this.simAccMs += frameMs;
     const target = Math.max(1, this.cfg.simTicksPerSec);
     const stepMs = 1000 / target;
-
     if (this.simAccMs < stepMs) return false;
-    this.simAccMs = 0;
-    return this.stepOnce();
+
+    const workBudgetMs = Math.max(0, maxWorkMs);
+    const start = performance.now();
+
+    let changed = false;
+    while (this.simAccMs >= stepMs) {
+      if (workBudgetMs > 0 && performance.now() - start >= workBudgetMs) break;
+      const stepped = this.stepOnce();
+      if (!stepped) {
+        this.simAccMs = 0;
+        break;
+      }
+      this.simAccMs -= stepMs;
+      if (this.simAccMs < 0) this.simAccMs = 0;
+      changed = true;
+    }
+
+    return changed;
   }
 
   applyMaterialTool(index: number, tool: MaterialTool, selectedMaterialId: string): string | null {
