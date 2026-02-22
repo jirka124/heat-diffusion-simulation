@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { HeatSimulation } from 'src/sim/heatSimulation';
+import { configureStepWorldProfiling } from 'src/sim/heatWorld';
 import type { World } from 'src/sim/heatWorld';
 import type {
   HeatWorldSnapshot,
@@ -11,6 +12,8 @@ import type {
 
 const LOOP_MS = 4;
 const IDLE_LOOP_MS = 50;
+const PROFILE_STEP_WORLD = true;
+const PROFILE_STEP_WORLD_REPORT_EVERY_STEPS = 1000;
 const DEFAULT_SNAPSHOT_FPS_LIMIT = 12;
 const MIN_SNAPSHOT_FPS_LIMIT = 1;
 const MAX_SNAPSHOT_FPS_LIMIT = 60;
@@ -21,6 +24,14 @@ let lastLoopTs = performance.now();
 let lastSnapshotTs = 0;
 let snapshotMinMs = 1000 / DEFAULT_SNAPSHOT_FPS_LIMIT;
 let dirty = true;
+
+if (PROFILE_STEP_WORLD) {
+  configureStepWorldProfiling({
+    enabled: true,
+    reportEverySteps: PROFILE_STEP_WORLD_REPORT_EVERY_STEPS,
+    logToConsole: true,
+  });
+}
 
 function clampSnapshotFpsLimit(value: number) {
   if (!Number.isFinite(value)) return DEFAULT_SNAPSHOT_FPS_LIMIT;

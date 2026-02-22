@@ -79,7 +79,15 @@ export type World = {
   cells: Cell[];
   materials: Record<string, Material>;
   units: Record<string, Unit>;
+  _tempByCell: Float64Array;
+  _unitIdByCell: (string | null)[];
   _dQ: Float64Array;
+  _cellCapJPerK: Float64Array;
+  _edgeConductanceRightWPerK: Float64Array;
+  _edgeConductanceDownWPerK: Float64Array;
+  _unitEmitterCells: number[];
+  _fixedEmitterCells: number[];
+  _fixedEmitterEmitTemp: number[];
   // flattened [cellIndex * 4 + dir] where dir: 0=left,1=right,2=up,3=down
   _boundaryTargetByDir: (string | null)[];
 
@@ -90,6 +98,10 @@ export type Vec2 = { x: number; y: number };
 
 export const SHARED_UNIT_ID = 'SHARED';
 export const OUTSIDE_TARGET_ID = 'OUTSIDE';
+const DIR_LEFT = 0;
+const DIR_RIGHT = 1;
+const DIR_UP = 2;
+const DIR_DOWN = 3;
 
 export function xyToN(pos: Vec2, w: number) {
   return pos.y * w + pos.x;
@@ -308,7 +320,15 @@ export function createWorld(opts: {
     cells,
     materials,
     units,
+    _tempByCell: new Float64Array(n),
+    _unitIdByCell: new Array(n).fill(null),
     _dQ: new Float64Array(n),
+    _cellCapJPerK: new Float64Array(n),
+    _edgeConductanceRightWPerK: new Float64Array(n),
+    _edgeConductanceDownWPerK: new Float64Array(n),
+    _unitEmitterCells: [],
+    _fixedEmitterCells: [],
+    _fixedEmitterEmitTemp: [],
     _boundaryTargetByDir: new Array(n * 4).fill(null),
     resetOptimisation() {
       this.__OPTIMISED = false;
@@ -361,6 +381,12 @@ function optimiseWorld(world: World) {
   const units = Object.values(world.units);
   const cells = world.cells;
   const n = world.w * world.h;
+  if (world._tempByCell.length !== n) {
+    world._tempByCell = new Float64Array(n);
+  }
+  if (world._unitIdByCell.length !== n) {
+    world._unitIdByCell = new Array(n).fill(null);
+  }
 
   // generate runtime property of units
   for (let i = 0, len = units.length; i < len; i++) {
@@ -439,6 +465,77 @@ function optimiseWorld(world: World) {
     }
 
     rt.boundaryTargetsByCell[cellInd] = byDir;
+  }
+
+  if (world._cellCapJPerK.length !== n) {
+    world._cellCapJPerK = new Float64Array(n);
+  }
+  if (world._edgeConductanceRightWPerK.length !== n) {
+    world._edgeConductanceRightWPerK = new Float64Array(n);
+  } else {
+    world._edgeConductanceRightWPerK.fill(0);
+  }
+  if (world._edgeConductanceDownWPerK.length !== n) {
+    world._edgeConductanceDownWPerK = new Float64Array(n);
+  } else {
+    world._edgeConductanceDownWPerK.fill(0);
+  }
+
+  const capByCell = world._cellCapJPerK;
+  const rightG = world._edgeConductanceRightWPerK;
+  const downG = world._edgeConductanceDownWPerK;
+  const tempByCell = world._tempByCell;
+  const unitIdByCell = world._unitIdByCell;
+  const unitEmitterCells = world._unitEmitterCells;
+  const fixedEmitterCells = world._fixedEmitterCells;
+  const fixedEmitterEmitTemp = world._fixedEmitterEmitTemp;
+
+  unitEmitterCells.length = 0;
+  fixedEmitterCells.length = 0;
+  fixedEmitterEmitTemp.length = 0;
+
+  for (let i = 0; i < n; i++) {
+    const c = cells[i];
+    const m = c ? world.materials[c.materialId] : undefined;
+    tempByCell[i] = c?.T ?? 0;
+    unitIdByCell[i] = c?.unitId ?? null;
+    capByCell[i] = m ? cellCapJPerK(m) : 1e-9;
+
+    const emitTemp = m?.emitTemp;
+    if (!c || emitTemp == null || !Number.isFinite(emitTemp)) continue;
+    if (!c.unitId || !world.units[c.unitId]) {
+      fixedEmitterCells.push(i);
+      fixedEmitterEmitTemp.push(emitTemp);
+      continue;
+    }
+    unitEmitterCells.push(i);
+  }
+
+  for (let y = 0; y < world.h; y++) {
+    const row = y * world.w;
+    for (let x = 0; x < world.w - 1; x++) {
+      const i = row + x;
+      const j = i + 1;
+      const ci = cells[i];
+      const cj = cells[j];
+      const mi = ci ? world.materials[ci.materialId] : undefined;
+      const mj = cj ? world.materials[cj.materialId] : undefined;
+      rightG[i] = mi && mj ? edgeConductanceWPerK(mi, mj) : 0;
+    }
+  }
+
+  for (let y = 0; y < world.h - 1; y++) {
+    const row = y * world.w;
+    const rowBelow = row + world.w;
+    for (let x = 0; x < world.w; x++) {
+      const i = row + x;
+      const j = rowBelow + x;
+      const ci = cells[i];
+      const cj = cells[j];
+      const mi = ci ? world.materials[ci.materialId] : undefined;
+      const mj = cj ? world.materials[cj.materialId] : undefined;
+      downG[i] = mi && mj ? edgeConductanceWPerK(mi, mj) : 0;
+    }
   }
 
   world.__OPTIMISED = true;
@@ -570,15 +667,15 @@ function recomputeUnitComfortScores(world: World) {
 }
 
 function updateEmitterStates(world: World) {
-  const { cells, materials, units } = world;
-  const n = cells.length;
+  const { cells, materials, units, _unitEmitterCells } = world;
 
-  // auto-control per-cell emitters by unit avgTemp + active comfy range
-  for (let i = 0; i < n; i++) {
-    const c = cells[i];
+  // Auto-control per-unit emitter cells by unit avgTemp + active comfy range.
+  for (let i = 0; i < _unitEmitterCells.length; i++) {
+    const cellIndex = _unitEmitterCells[i];
+    const c = cells[cellIndex];
+    if (!c || !c.unitId) continue;
     const m = materials[c.materialId];
     if (!m || m.emitTemp == null) continue;
-    if (!c.unitId) continue;
 
     const unit = units[c.unitId];
     const rt = unit?.runtime;
@@ -597,11 +694,12 @@ type EmitterRequest = {
 
 function buildEmitterRequests(world: World): EmitterRequest[] {
   const requests: EmitterRequest[] = [];
-  const { cells, materials, units } = world;
+  const { cells, materials, units, _unitEmitterCells } = world;
 
-  for (let i = 0; i < cells.length; i++) {
+  for (let k = 0; k < _unitEmitterCells.length; k++) {
+    const i = _unitEmitterCells[k];
     const c = cells[i];
-    if (!c?.unitId || !c.tempEmitting) continue;
+    if (!c || !c.unitId || !c.tempEmitting) continue;
 
     const m = materials[c.materialId];
     if (!m || m.emitTemp == null) continue;
@@ -684,14 +782,6 @@ function resetHeatFlowTick(world: World) {
   }
 }
 
-function dirFromTo(i: number, j: number, w: number): 0 | 1 | 2 | 3 | null {
-  if (j === i - 1) return 0;
-  if (j === i + 1) return 1;
-  if (j === i - w) return 2;
-  if (j === i + w) return 3;
-  return null;
-}
-
 function addHeatFlow(world: World, fromUnitId: string, targetId: string, amount: number) {
   const rt = world.units[fromUnitId]?.runtime;
   if (!rt || !Number.isFinite(amount) || amount === 0) return;
@@ -712,30 +802,203 @@ function addEmitterConsumption(world: World, unitId: string, powerW: number, dt:
   rt.emitterEnergyTotalJ += energyJ;
 }
 
-function recordInterUnitHeatFlow(world: World, i: number, j: number, q: number) {
-  const { cells, w, _boundaryTargetByDir } = world;
+function recordInterUnitHeatFlowKnownDirs(
+  world: World,
+  unitI: string | null,
+  unitJ: string | null,
+  i: number,
+  j: number,
+  dirIj: 0 | 1 | 2 | 3,
+  dirJi: 0 | 1 | 2 | 3,
+  q: number,
+) {
+  if (unitI) {
+    const targetId = world._boundaryTargetByDir[i * 4 + dirIj];
+    if (targetId) addHeatFlow(world, unitI, targetId, q);
+  }
 
-  const ci = cells[i];
-  const cj = cells[j];
-  if (!ci || !cj) return;
+  if (unitJ) {
+    const targetId = world._boundaryTargetByDir[j * 4 + dirJi];
+    if (targetId) addHeatFlow(world, unitJ, targetId, -q);
+  }
+}
 
-  const dirIj = dirFromTo(i, j, w);
-  const dirJi = dirFromTo(j, i, w);
-  if (dirIj == null || dirJi == null) return;
+type StepWorldProfilePhase =
+  | 'optimiseAndReset'
+  | 'prepareBuffers'
+  | 'conductionHorizontal'
+  | 'conductionVertical'
+  | 'applyDiffusion'
+  | 'preEmitterControl'
+  | 'applyFixedEmitters'
+  | 'buildEmitterRequests'
+  | 'computePowerScales'
+  | 'applyUnitEmitters'
+  | 'postEmitterMetrics'
+  | 'postEmitterState';
 
-  if (ci.unitId) {
-    const targetId = _boundaryTargetByDir[i * 4 + dirIj];
-    if (targetId) {
-      addHeatFlow(world, ci.unitId, targetId, q);
+type PhaseStats = {
+  totalMs: number;
+  maxMs: number;
+};
+
+export type StepWorldProfilingOptions = {
+  enabled: boolean;
+  reportEverySteps: number;
+  logToConsole: boolean;
+};
+
+export type StepWorldProfilingReport = {
+  steps: number;
+  totalMs: number;
+  avgStepMs: number;
+  maxStepMs: number;
+  approxTicksPerSec: number;
+  avgEmitterRequests: number;
+  maxEmitterRequests: number;
+  phases: Record<
+    StepWorldProfilePhase,
+    {
+      totalMs: number;
+      avgMs: number;
+      maxMs: number;
+      sharePct: number;
+    }
+  >;
+};
+
+const STEP_WORLD_PHASES: StepWorldProfilePhase[] = [
+  'optimiseAndReset',
+  'prepareBuffers',
+  'conductionHorizontal',
+  'conductionVertical',
+  'applyDiffusion',
+  'preEmitterControl',
+  'applyFixedEmitters',
+  'buildEmitterRequests',
+  'computePowerScales',
+  'applyUnitEmitters',
+  'postEmitterMetrics',
+  'postEmitterState',
+];
+
+function createPhaseStats(): Record<StepWorldProfilePhase, PhaseStats> {
+  const out = {} as Record<StepWorldProfilePhase, PhaseStats>;
+  for (let i = 0; i < STEP_WORLD_PHASES.length; i++) {
+    out[STEP_WORLD_PHASES[i]] = { totalMs: 0, maxMs: 0 };
+  }
+  return out;
+}
+
+const stepWorldProfiling = {
+  options: {
+    enabled: false,
+    reportEverySteps: 500,
+    logToConsole: true,
+  } as StepWorldProfilingOptions,
+  windowSteps: 0,
+  windowTotalMs: 0,
+  windowMaxStepMs: 0,
+  windowEmitterRequestsSum: 0,
+  windowEmitterRequestsMax: 0,
+  windowPhases: createPhaseStats(),
+  lastReport: null as StepWorldProfilingReport | null,
+};
+
+function resetStepWorldProfilingWindow() {
+  stepWorldProfiling.windowSteps = 0;
+  stepWorldProfiling.windowTotalMs = 0;
+  stepWorldProfiling.windowMaxStepMs = 0;
+  stepWorldProfiling.windowEmitterRequestsSum = 0;
+  stepWorldProfiling.windowEmitterRequestsMax = 0;
+  stepWorldProfiling.windowPhases = createPhaseStats();
+}
+
+export function configureStepWorldProfiling(
+  options: Partial<StepWorldProfilingOptions> = {},
+): StepWorldProfilingOptions {
+  if (typeof options.enabled === 'boolean') {
+    const nextEnabled = options.enabled;
+    const prevEnabled = stepWorldProfiling.options.enabled;
+    stepWorldProfiling.options.enabled = nextEnabled;
+    if (nextEnabled && !prevEnabled) {
+      resetStepWorldProfilingWindow();
+      stepWorldProfiling.lastReport = null;
     }
   }
 
-  if (cj.unitId) {
-    const targetId = _boundaryTargetByDir[j * 4 + dirJi];
-    if (targetId) {
-      addHeatFlow(world, cj.unitId, targetId, -q);
-    }
+  if (typeof options.reportEverySteps === 'number' && Number.isFinite(options.reportEverySteps)) {
+    stepWorldProfiling.options.reportEverySteps = Math.max(1, Math.floor(options.reportEverySteps));
   }
+
+  if (typeof options.logToConsole === 'boolean') {
+    stepWorldProfiling.options.logToConsole = options.logToConsole;
+  }
+
+  return { ...stepWorldProfiling.options };
+}
+
+export function resetStepWorldProfiling() {
+  resetStepWorldProfilingWindow();
+  stepWorldProfiling.lastReport = null;
+}
+
+export function getStepWorldProfilingReport() {
+  return stepWorldProfiling.lastReport;
+}
+
+function createStepWorldProfilingReport(): StepWorldProfilingReport | null {
+  const steps = stepWorldProfiling.windowSteps;
+  if (steps <= 0) return null;
+
+  const totalMs = stepWorldProfiling.windowTotalMs;
+  const avgStepMs = totalMs / steps;
+  const approxTicksPerSec = avgStepMs > 0 ? 1000 / avgStepMs : 0;
+
+  const phases = {} as StepWorldProfilingReport['phases'];
+  for (let i = 0; i < STEP_WORLD_PHASES.length; i++) {
+    const phase = STEP_WORLD_PHASES[i];
+    const cur = stepWorldProfiling.windowPhases[phase];
+    phases[phase] = {
+      totalMs: cur.totalMs,
+      avgMs: cur.totalMs / steps,
+      maxMs: cur.maxMs,
+      sharePct: totalMs > 0 ? (cur.totalMs / totalMs) * 100 : 0,
+    };
+  }
+
+  return {
+    steps,
+    totalMs,
+    avgStepMs,
+    maxStepMs: stepWorldProfiling.windowMaxStepMs,
+    approxTicksPerSec,
+    avgEmitterRequests: stepWorldProfiling.windowEmitterRequestsSum / steps,
+    maxEmitterRequests: stepWorldProfiling.windowEmitterRequestsMax,
+    phases,
+  };
+}
+
+function maybeFlushStepWorldProfilingReport() {
+  const reportEverySteps = stepWorldProfiling.options.reportEverySteps;
+  if (stepWorldProfiling.windowSteps < reportEverySteps) return;
+
+  const report = createStepWorldProfilingReport();
+  if (!report) return;
+
+  stepWorldProfiling.lastReport = report;
+
+  if (stepWorldProfiling.options.logToConsole) {
+    const phaseSummary = STEP_WORLD_PHASES.map((phase) => {
+      const p = report.phases[phase];
+      return `${phase}=${p.avgMs.toFixed(3)}ms (${p.sharePct.toFixed(1)}%)`;
+    }).join(', ');
+    console.log(
+      `[stepWorld profile] steps=${report.steps}, avg=${report.avgStepMs.toFixed(3)}ms, max=${report.maxStepMs.toFixed(3)}ms, approx=${report.approxTicksPerSec.toFixed(1)} tick/s, emitReq(avg/max)=${report.avgEmitterRequests.toFixed(1)}/${report.maxEmitterRequests}; ${phaseSummary}`,
+    );
+  }
+
+  resetStepWorldProfilingWindow();
 }
 
 /**
@@ -747,11 +1010,25 @@ function recordInterUnitHeatFlow(world: World, i: number, j: number, q: number) 
  *    - unit emitters add/remove energy by power (emitPowerW * dt)
  */
 export function stepWorld(world: World, dt: number, secOfDay = 0) {
-  const { w, h, cells, units, materials } = world;
+  const { w, h, cells, materials } = world;
   const n = w * h;
+  const profilingEnabled = stepWorldProfiling.options.enabled;
+  const stepStartMs = profilingEnabled ? performance.now() : 0;
+  let phaseStartMs = stepStartMs;
+  const phaseTotals = profilingEnabled ? createPhaseStats() : null;
+  const markPhase = (phase: StepWorldProfilePhase) => {
+    if (!phaseTotals) return;
+    const now = performance.now();
+    const dur = now - phaseStartMs;
+    phaseStartMs = now;
+    const p = phaseTotals[phase];
+    p.totalMs += dur;
+    if (dur > p.maxMs) p.maxMs = dur;
+  };
 
   optimiseWorld(world);
   resetHeatFlowTick(world);
+  markPhase('optimiseAndReset');
 
   let dQ = world._dQ;
   if (dQ.length !== n) {
@@ -761,38 +1038,37 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
   } else {
     dQ.fill(0);
   }
-
-  const flow = (i: number, j: number) => {
-    const ci = cells[i];
-    const cj = cells[j];
-
-    const Ti = ci.T;
-    const Tj = cj.T;
-    if (Ti === Tj) return;
-
-    const mi = materials[ci.materialId];
-    const mj = materials[cj.materialId];
-    if (!mi || !mj) return;
-
-    // conduction between cells:
-    // G [W/K] = lambda_eff * A / L
-    const g = edgeConductanceWPerK(mi, mj);
-
-    // energy transferred this step
-    const q = g * (Ti - Tj) * dt;
-    dQ[i] -= q;
-    dQ[j] += q;
-    recordInterUnitHeatFlow(world, i, j, q);
-  };
+  markPhase('prepareBuffers');
+  const rightG = world._edgeConductanceRightWPerK;
+  const downG = world._edgeConductanceDownWPerK;
+  const capByCell = world._cellCapJPerK;
+  const tempByCell = world._tempByCell;
+  const unitIdByCell = world._unitIdByCell;
 
   // horizontal edges
   for (let y = 0; y < h; y++) {
     const row = y * w;
     for (let x = 0; x < w - 1; x++) {
       const i = row + x;
-      flow(i, i + 1);
+      const j = i + 1;
+      const Ti = tempByCell[i];
+      const Tj = tempByCell[j];
+      if (Ti === Tj) continue;
+
+      const g = rightG[i];
+      if (g <= 0) continue;
+
+      const q = g * (Ti - Tj) * dt;
+      dQ[i] -= q;
+      dQ[j] += q;
+      const unitI = unitIdByCell[i];
+      const unitJ = unitIdByCell[j];
+      if (unitI || unitJ) {
+        recordInterUnitHeatFlowKnownDirs(world, unitI, unitJ, i, j, DIR_RIGHT, DIR_LEFT, q);
+      }
     }
   }
+  markPhase('conductionHorizontal');
 
   // vertical edges
   for (let y = 0; y < h - 1; y++) {
@@ -800,49 +1076,62 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
     const rowBelow = (y + 1) * w;
     for (let x = 0; x < w; x++) {
       const i = row + x;
-      flow(i, rowBelow + x);
+      const j = rowBelow + x;
+      const Ti = tempByCell[i];
+      const Tj = tempByCell[j];
+      if (Ti === Tj) continue;
+
+      const g = downG[i];
+      if (g <= 0) continue;
+
+      const q = g * (Ti - Tj) * dt;
+      dQ[i] -= q;
+      dQ[j] += q;
+      const unitI = unitIdByCell[i];
+      const unitJ = unitIdByCell[j];
+      if (unitI || unitJ) {
+        recordInterUnitHeatFlowKnownDirs(world, unitI, unitJ, i, j, DIR_DOWN, DIR_UP, q);
+      }
     }
   }
+  markPhase('conductionVertical');
 
   // apply temperature changes from diffusion
   for (let i = 0; i < n; i++) {
-    const c = cells[i];
-    const m = materials[c.materialId];
-    if (!m) continue;
-
-    const cap = cellCapJPerK(m);
-    c.T += dQ[i] / cap;
+    const cap = capByCell[i];
+    tempByCell[i] += dQ[i] / (cap > 0 ? cap : 1e-9);
   }
+  for (let i = 0; i < n; i++) {
+    const c = cells[i];
+    if (!c) continue;
+    c.T = tempByCell[i];
+  }
+  markPhase('applyDiffusion');
 
   // Use up-to-date unit averages/ranges for this step's emitter control.
   recomputeUnitAvgTemps(world);
   recomputeUnitComfyRanges(world, secOfDay);
   updateEmitterStates(world);
+  markPhase('preEmitterControl');
 
-  // apply fixed infrastructure emitters (outside, etc.)
-  for (let i = 0; i < n; i++) {
-    const c = cells[i];
-    const m = materials[c.materialId];
-    if (!m || m.emitTemp == null) continue;
-
-    // Cells without unit are considered fixed infrastructure emitters.
-    if (!c.unitId) {
-      c.tempEmitting = true;
-      c.T = m.emitTemp;
-      continue;
-    }
-
-    // Unknown unit: keep emitter on as safe fallback.
-    if (!units[c.unitId]) {
-      c.tempEmitting = true;
-      c.T = m.emitTemp;
-      continue;
-    }
+  // Apply fixed infrastructure emitters (outside, invalid unit references, etc.).
+  for (let i = 0; i < world._fixedEmitterCells.length; i++) {
+    const cellIndex = world._fixedEmitterCells[i];
+    const c = cells[cellIndex];
+    if (!c) continue;
+    const emitTemp = world._fixedEmitterEmitTemp[i];
+    if (!Number.isFinite(emitTemp)) continue;
+    c.tempEmitting = true;
+    c.T = emitTemp;
+    tempByCell[cellIndex] = emitTemp;
   }
+  markPhase('applyFixedEmitters');
 
   // apply unit emitters using unit-level demand budgeting
   const emitterRequests = buildEmitterRequests(world);
+  markPhase('buildEmitterRequests');
   const unitPowerScales = computeUnitPowerScales(world, emitterRequests, dt);
+  markPhase('computePowerScales');
   for (let i = 0; i < emitterRequests.length; i++) {
     const req = emitterRequests[i];
     const c = cells[req.cellIndex];
@@ -855,18 +1144,46 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
     const effectivePowerW = req.rawPowerW * unitScale;
     if (effectivePowerW <= 0) continue;
 
-    const cap = cellCapJPerK(m);
+    const cap = capByCell[req.cellIndex];
     const qEmitter = effectivePowerW * dt * req.dir;
-    c.T += qEmitter / cap;
+    const nextT = c.T + qEmitter / (cap > 0 ? cap : 1e-9);
+    c.T = nextT;
+    tempByCell[req.cellIndex] = nextT;
     addEmitterConsumption(world, c.unitId, effectivePowerW, dt);
   }
+  markPhase('applyUnitEmitters');
 
   recomputeUnitAvgTemps(world);
   recomputeUnitComfyRanges(world, secOfDay);
   recomputeUnitComfortScores(world);
+  markPhase('postEmitterMetrics');
 
   // update state for next step using post-emitter temperatures
   updateEmitterStates(world);
+  markPhase('postEmitterState');
+
+  if (phaseTotals) {
+    const stepMs = performance.now() - stepStartMs;
+    stepWorldProfiling.windowSteps += 1;
+    stepWorldProfiling.windowTotalMs += stepMs;
+    if (stepMs > stepWorldProfiling.windowMaxStepMs) {
+      stepWorldProfiling.windowMaxStepMs = stepMs;
+    }
+    stepWorldProfiling.windowEmitterRequestsSum += emitterRequests.length;
+    if (emitterRequests.length > stepWorldProfiling.windowEmitterRequestsMax) {
+      stepWorldProfiling.windowEmitterRequestsMax = emitterRequests.length;
+    }
+
+    for (let i = 0; i < STEP_WORLD_PHASES.length; i++) {
+      const phase = STEP_WORLD_PHASES[i];
+      const src = phaseTotals[phase];
+      const dst = stepWorldProfiling.windowPhases[phase];
+      dst.totalMs += src.totalMs;
+      if (src.maxMs > dst.maxMs) dst.maxMs = src.maxMs;
+    }
+
+    maybeFlushStepWorldProfilingReport();
+  }
 }
 
 export function getMinMaxT(world: World) {
