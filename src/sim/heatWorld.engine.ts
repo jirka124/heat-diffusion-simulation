@@ -4,6 +4,7 @@ import {
   type Material,
   type TempRange,
   type Unit,
+  type UnitZoneRuntime,
   type UnitRuntime,
   type World,
 } from 'src/sim/heatWorld.types';
@@ -91,6 +92,8 @@ function createInitialUnitRuntime(): UnitRuntime {
     totalCapJPerK: 0,
     avgTemp: 0,
     comfyRange: { min: -Infinity, max: Infinity },
+    zones: [],
+    zoneIndexByCell: {},
     boundaryTargetsByCell: {},
     heatFlowTick: {},
     heatFlowTotal: {},
@@ -159,6 +162,65 @@ function rebuildUnitCellTopology(world: World) {
       rt.totalCapJPerK += cellCapJPerK(material!);
     } else {
       rt.heaterCells.push(cellInd);
+    }
+  }
+}
+
+// Rebuilds per-unit connected components (zones) from unit cell topology.
+function rebuildUnitZones(world: World) {
+  const { w, h, cells } = world;
+  const visited = new Uint8Array(w * h);
+
+  for (const unit of Object.values(world.units)) {
+    const rt = unit?.runtime;
+    if (!unit || !rt) continue;
+
+    rt.zones = [];
+    rt.zoneIndexByCell = {};
+
+    for (let i = 0; i < rt.allCells.length; i++) {
+      const start = rt.allCells[i];
+      if (start == null || visited[start]) continue;
+
+      const zone: UnitZoneRuntime = {
+        allCells: [],
+        heaterCells: [],
+        totalCapJPerK: 0,
+        avgTemp: 0,
+      };
+      const stack: number[] = [start];
+      const zoneIndex = rt.zones.length;
+
+      while (stack.length > 0) {
+        const n = stack.pop();
+        if (n == null || visited[n]) continue;
+
+        const c = cells[n];
+        if (!c || c.unitId !== unit.id) continue;
+        visited[n] = 1;
+
+        zone.allCells.push(n);
+        rt.zoneIndexByCell[n] = zoneIndex;
+
+        const m = world.materials[c.materialId];
+        if (m) {
+          zone.totalCapJPerK += cellCapJPerK(m);
+          if (m.emitTemp != null) {
+            zone.heaterCells.push(n);
+          }
+        }
+
+        const x = n % w;
+        const y = (n / w) | 0;
+        if (x > 0) stack.push(n - 1);
+        if (x < w - 1) stack.push(n + 1);
+        if (y > 0) stack.push(n - w);
+        if (y < h - 1) stack.push(n + w);
+      }
+
+      if (zone.allCells.length > 0) {
+        rt.zones.push(zone);
+      }
     }
   }
 }
@@ -258,6 +320,7 @@ function optimiseWorld(world: World) {
   ensureOptimisedStorage(world, n);
   resetRuntimeForAllUnits(world);
   rebuildUnitCellTopology(world);
+  rebuildUnitZones(world);
   rebuildBoundaryTargets(world);
   rebuildCellCaches(world, n);
   rebuildConductionCaches(world);
@@ -347,6 +410,33 @@ function recomputeUnitAvgTemps(world: World) {
   }
 }
 
+// Recomputes average temperature for each zone in each unit.
+function recomputeUnitZoneAvgTemps(world: World) {
+  const unitsArr = Object.values(world.units);
+  for (let i = 0; i < unitsArr.length; i++) {
+    const rt = unitsArr[i]?.runtime;
+    if (!rt) continue;
+
+    for (let z = 0; z < rt.zones.length; z++) {
+      const zone = rt.zones[z];
+      if (!zone || zone.allCells.length === 0) {
+        if (zone) zone.avgTemp = 0;
+        continue;
+      }
+
+      let sum = 0;
+      for (let c = 0; c < zone.allCells.length; c++) {
+        const cellIndex = zone.allCells[c];
+        if (cellIndex == null) continue;
+        const cell = world.cells[cellIndex];
+        if (!cell) continue;
+        sum += cell.T;
+      }
+      zone.avgTemp = sum / zone.allCells.length;
+    }
+  }
+}
+
 // Recomputes active comfort ranges for all units.
 function recomputeUnitComfyRanges(world: World, secOfDay: number) {
   const unitsArr = Object.values(world.units);
@@ -396,16 +486,25 @@ function updateEmitterStates(world: World) {
     const unit = units[c.unitId];
     const rt = unit?.runtime;
     if (!unit || !rt) continue;
-    c.tempEmitting = shouldEmitterBeOn(m.emitTemp, rt.avgTemp, rt.comfyRange, c.tempEmitting);
+    const zoneIndex = rt.zoneIndexByCell[cellIndex];
+    const zone = zoneIndex == null ? null : rt.zones[zoneIndex];
+    const controlTemp = zone ? zone.avgTemp : rt.avgTemp;
+    c.tempEmitting = shouldEmitterBeOn(m.emitTemp, controlTemp, rt.comfyRange, c.tempEmitting);
   }
 }
 
 type EmitterRequest = {
   unitId: string;
+  zoneIndex: number;
+  zoneKey: string;
   cellIndex: number;
   dir: 1 | -1;
   rawPowerW: number;
 };
+
+function zoneKey(unitId: string, zoneIndex: number) {
+  return `${unitId}:${zoneIndex}`;
+}
 
 // Builds list of active emitter power requests for this step.
 function buildEmitterRequests(world: World): EmitterRequest[] {
@@ -424,6 +523,10 @@ function buildEmitterRequests(world: World): EmitterRequest[] {
     const unit = units[c.unitId];
     const rt = unit?.runtime;
     if (!rt) continue;
+    const zoneIndex = rt.zoneIndexByCell[i];
+    if (zoneIndex == null) continue;
+    const zone = rt.zones[zoneIndex];
+    if (!zone) continue;
 
     const emitPowerW = Math.max(0, m.emitPowerW ?? 0);
     if (emitPowerW <= 0) continue;
@@ -431,12 +534,14 @@ function buildEmitterRequests(world: World): EmitterRequest[] {
     const dirSign = Math.sign(m.emitTemp - c.T);
     if (dirSign === 0) continue;
 
-    const powerScale = emitterPowerFactor(m.emitTemp, rt.avgTemp, rt.comfyRange);
+    const powerScale = emitterPowerFactor(m.emitTemp, zone.avgTemp, rt.comfyRange);
     const rawPowerW = emitPowerW * powerScale;
     if (rawPowerW <= 0) continue;
 
     requests.push({
       unitId: c.unitId,
+      zoneIndex,
+      zoneKey: zoneKey(c.unitId, zoneIndex),
       cellIndex: i,
       dir: dirSign > 0 ? 1 : -1,
       rawPowerW,
@@ -452,11 +557,17 @@ function computeUnitPowerScales(
   requests: EmitterRequest[],
   dt: number,
 ): Record<string, { heat: number; cool: number }> {
-  const sums: Record<string, { heat: number; cool: number }> = {};
+  const sums: Record<string, { heat: number; cool: number; unitId: string; zoneIndex: number }> =
+    {};
   for (let i = 0; i < requests.length; i++) {
     const req = requests[i];
     if (!req) continue;
-    const cur = (sums[req.unitId] ??= { heat: 0, cool: 0 });
+    const cur = (sums[req.zoneKey] ??= {
+      heat: 0,
+      cool: 0,
+      unitId: req.unitId,
+      zoneIndex: req.zoneIndex,
+    });
     if (req.dir > 0) cur.heat += req.rawPowerW;
     else cur.cool += req.rawPowerW;
   }
@@ -464,19 +575,19 @@ function computeUnitPowerScales(
   const scales: Record<string, { heat: number; cool: number }> = {};
   const safeDt = Math.max(1e-9, dt);
   const gain = 0.12;
-  const units = Object.values(world.units);
-
-  for (let i = 0; i < units.length; i++) {
-    const u = units[i];
-    const rt = u?.runtime;
-    if (!u || !rt) continue;
-
-    const raw = sums[u.id] ?? { heat: 0, cool: 0 };
+  for (const key of Object.keys(sums)) {
+    const raw = sums[key];
+    if (!raw) continue;
     if (raw.heat <= 0 && raw.cool <= 0) continue;
 
+    const rt = world.units[raw.unitId]?.runtime;
+    if (!rt) continue;
+    const zone = rt.zones[raw.zoneIndex];
+    if (!zone) continue;
+
     const target = (rt.comfyRange.min + rt.comfyRange.max) / 2;
-    const err = target - rt.avgTemp;
-    const cap = Math.max(1e-9, rt.totalCapJPerK);
+    const err = target - zone.avgTemp;
+    const cap = Math.max(1e-9, zone.totalCapJPerK);
     const requiredPowerW = (Math.abs(err) * cap * gain) / safeDt;
 
     const heatScale =
@@ -484,7 +595,7 @@ function computeUnitPowerScales(
     const coolScale =
       err < 0 && raw.cool > 0 ? clamp(requiredPowerW / Math.max(raw.cool, 1e-9), 0, 1) : 0;
 
-    scales[u.id] = { heat: heatScale, cool: coolScale };
+    scales[key] = { heat: heatScale, cool: coolScale };
   }
 
   return scales;
@@ -691,7 +802,7 @@ function applyUnitEmitters(
     const m = materials[c.materialId];
     if (!m) continue;
 
-    const scale = unitPowerScales[c.unitId];
+    const scale = unitPowerScales[req.zoneKey];
     const unitScale = req.dir > 0 ? (scale?.heat ?? 0) : (scale?.cool ?? 0);
     const effectivePowerW = req.rawPowerW * unitScale;
     if (effectivePowerW <= 0) continue;
@@ -733,6 +844,7 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
   markPhase('applyDiffusion');
 
   recomputeUnitAvgTemps(world);
+  recomputeUnitZoneAvgTemps(world);
   recomputeUnitComfyRanges(world, secOfDay);
   updateEmitterStates(world);
   markPhase('preEmitterControl');
@@ -750,6 +862,7 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
   markPhase('applyUnitEmitters');
 
   recomputeUnitAvgTemps(world);
+  recomputeUnitZoneAvgTemps(world);
   recomputeUnitComfyRanges(world, secOfDay);
   recomputeUnitComfortScores(world);
   markPhase('postEmitterMetrics');

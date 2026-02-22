@@ -40,6 +40,14 @@ export type UnitParams =
       away: TempRange;
     };
 
+export type UnitZoneRuntime = {
+  allCells: number[];
+  heaterCells: number[];
+  // Total heat capacity of all zone cells [J/K].
+  totalCapJPerK: number;
+  avgTemp: number;
+};
+
 export type UnitRuntime = {
   allCells: number[];
   heaterCells: number[];
@@ -47,6 +55,10 @@ export type UnitRuntime = {
   totalCapJPerK: number;
   avgTemp: number;
   comfyRange: TempRange;
+  // Connected components inside this unit (no cross-unit bridging).
+  zones: UnitZoneRuntime[];
+  // cellIndex -> zone index in `zones`.
+  zoneIndexByCell: Record<number, number>;
   // cellIndex -> directional targets (left, right, up, down)
   boundaryTargetsByCell: Record<number, (string | null)[]>;
   heatFlowTick: Record<string, number>;
