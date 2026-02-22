@@ -431,7 +431,7 @@ function optimiseWorld(world: World) {
 
       const material = world.materials[cell.materialId];
       if (unit.runtime && material?.emitTemp == null) {
-        unit.runtime.totalCapJPerK += cellCapJPerK(material);
+        unit.runtime.totalCapJPerK += cellCapJPerK(material!);
       }
       if (material?.emitTemp != null) {
         unit.runtime?.heaterCells.push(cellInd);
@@ -458,7 +458,7 @@ function optimiseWorld(world: World) {
     const byDir: (string | null)[] = [null, null, null, null];
 
     for (let dir = 0; dir < 4; dir++) {
-      const [dx, dy] = dirs[dir];
+      const [dx, dy] = dirs[dir]!;
       const targetId = resolveBoundaryTargetForDirection(world, cellInd, cell.unitId, dx, dy);
       byDir[dir] = targetId;
       world._boundaryTargetByDir[cellInd * 4 + dir] = targetId;
@@ -672,6 +672,7 @@ function updateEmitterStates(world: World) {
   // Auto-control per-unit emitter cells by unit avgTemp + active comfy range.
   for (let i = 0; i < _unitEmitterCells.length; i++) {
     const cellIndex = _unitEmitterCells[i];
+    if (cellIndex == null) continue;
     const c = cells[cellIndex];
     if (!c || !c.unitId) continue;
     const m = materials[c.materialId];
@@ -698,6 +699,7 @@ function buildEmitterRequests(world: World): EmitterRequest[] {
 
   for (let k = 0; k < _unitEmitterCells.length; k++) {
     const i = _unitEmitterCells[k];
+    if (i == null) continue;
     const c = cells[i];
     if (!c || !c.unitId || !c.tempEmitting) continue;
 
@@ -737,6 +739,7 @@ function computeUnitPowerScales(
   const sums: Record<string, { heat: number; cool: number }> = {};
   for (let i = 0; i < requests.length; i++) {
     const req = requests[i];
+    if (!req) continue;
     const cur = (sums[req.unitId] ??= { heat: 0, cool: 0 });
     if (req.dir > 0) cur.heat += req.rawPowerW;
     else cur.cool += req.rawPowerW;
@@ -885,7 +888,9 @@ const STEP_WORLD_PHASES: StepWorldProfilePhase[] = [
 function createPhaseStats(): Record<StepWorldProfilePhase, PhaseStats> {
   const out = {} as Record<StepWorldProfilePhase, PhaseStats>;
   for (let i = 0; i < STEP_WORLD_PHASES.length; i++) {
-    out[STEP_WORLD_PHASES[i]] = { totalMs: 0, maxMs: 0 };
+    const phase = STEP_WORLD_PHASES[i];
+    if (!phase) continue;
+    out[phase] = { totalMs: 0, maxMs: 0 };
   }
   return out;
 }
@@ -958,6 +963,7 @@ function createStepWorldProfilingReport(): StepWorldProfilingReport | null {
   const phases = {} as StepWorldProfilingReport['phases'];
   for (let i = 0; i < STEP_WORLD_PHASES.length; i++) {
     const phase = STEP_WORLD_PHASES[i];
+    if (!phase) continue;
     const cur = stepWorldProfiling.windowPhases[phase];
     phases[phase] = {
       totalMs: cur.totalMs,
@@ -1053,16 +1059,18 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
       const j = i + 1;
       const Ti = tempByCell[i];
       const Tj = tempByCell[j];
+      if (Ti == null || Tj == null) continue;
       if (Ti === Tj) continue;
 
       const g = rightG[i];
+      if (g == null) continue;
       if (g <= 0) continue;
 
       const q = g * (Ti - Tj) * dt;
-      dQ[i] -= q;
-      dQ[j] += q;
-      const unitI = unitIdByCell[i];
-      const unitJ = unitIdByCell[j];
+      dQ[i]! -= q;
+      dQ[j]! += q;
+      const unitI = unitIdByCell[i] ?? null;
+      const unitJ = unitIdByCell[j] ?? null;
       if (unitI || unitJ) {
         recordInterUnitHeatFlowKnownDirs(world, unitI, unitJ, i, j, DIR_RIGHT, DIR_LEFT, q);
       }
@@ -1079,16 +1087,18 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
       const j = rowBelow + x;
       const Ti = tempByCell[i];
       const Tj = tempByCell[j];
+      if (Ti == null || Tj == null) continue;
       if (Ti === Tj) continue;
 
       const g = downG[i];
+      if (g == null) continue;
       if (g <= 0) continue;
 
       const q = g * (Ti - Tj) * dt;
-      dQ[i] -= q;
-      dQ[j] += q;
-      const unitI = unitIdByCell[i];
-      const unitJ = unitIdByCell[j];
+      dQ[i]! -= q;
+      dQ[j]! += q;
+      const unitI = unitIdByCell[i] ?? null;
+      const unitJ = unitIdByCell[j] ?? null;
       if (unitI || unitJ) {
         recordInterUnitHeatFlowKnownDirs(world, unitI, unitJ, i, j, DIR_DOWN, DIR_UP, q);
       }
@@ -1099,12 +1109,15 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
   // apply temperature changes from diffusion
   for (let i = 0; i < n; i++) {
     const cap = capByCell[i];
-    tempByCell[i] += dQ[i] / (cap > 0 ? cap : 1e-9);
+    if (cap == null) continue;
+    tempByCell[i]! += dQ[i]! / (cap > 0 ? cap : 1e-9);
   }
   for (let i = 0; i < n; i++) {
     const c = cells[i];
     if (!c) continue;
-    c.T = tempByCell[i];
+    const t = tempByCell[i];
+    if (t == null) continue;
+    c.T = t;
   }
   markPhase('applyDiffusion');
 
@@ -1117,10 +1130,11 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
   // Apply fixed infrastructure emitters (outside, invalid unit references, etc.).
   for (let i = 0; i < world._fixedEmitterCells.length; i++) {
     const cellIndex = world._fixedEmitterCells[i];
+    if (cellIndex == null) continue;
     const c = cells[cellIndex];
     if (!c) continue;
     const emitTemp = world._fixedEmitterEmitTemp[i];
-    if (!Number.isFinite(emitTemp)) continue;
+    if (emitTemp == null || !Number.isFinite(emitTemp)) continue;
     c.tempEmitting = true;
     c.T = emitTemp;
     tempByCell[cellIndex] = emitTemp;
@@ -1134,6 +1148,7 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
   markPhase('computePowerScales');
   for (let i = 0; i < emitterRequests.length; i++) {
     const req = emitterRequests[i];
+    if (!req) continue;
     const c = cells[req.cellIndex];
     if (!c || !c.unitId) continue;
     const m = materials[c.materialId];
@@ -1145,6 +1160,7 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
     if (effectivePowerW <= 0) continue;
 
     const cap = capByCell[req.cellIndex];
+    if (cap == null) continue;
     const qEmitter = effectivePowerW * dt * req.dir;
     const nextT = c.T + qEmitter / (cap > 0 ? cap : 1e-9);
     c.T = nextT;
@@ -1176,6 +1192,7 @@ export function stepWorld(world: World, dt: number, secOfDay = 0) {
 
     for (let i = 0; i < STEP_WORLD_PHASES.length; i++) {
       const phase = STEP_WORLD_PHASES[i];
+      if (!phase) continue;
       const src = phaseTotals[phase];
       const dst = stepWorldProfiling.windowPhases[phase];
       dst.totalMs += src.totalMs;

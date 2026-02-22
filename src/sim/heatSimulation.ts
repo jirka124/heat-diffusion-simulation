@@ -597,8 +597,9 @@ export class HeatSimulation {
       if (visited[n]) continue;
       visited[n] = 1;
 
-      if (cells[n].materialId !== fromId) continue;
-      cells[n].materialId = toId;
+      const cell = cells[n];
+      if (!cell || cell.materialId !== fromId) continue;
+      cell.materialId = toId;
 
       const x = n % w;
       const y = (n / w) | 0;
@@ -616,8 +617,10 @@ export class HeatSimulation {
     if (!this.worldRef) return;
 
     const { w, h, cells } = this.worldRef;
-    const fromMat = cells[startIndex].materialId;
-    const fromUnit = cells[startIndex].unitId;
+    const startCell = cells[startIndex];
+    if (!startCell) return;
+    const fromMat = startCell.materialId;
+    const fromUnit = startCell.unitId;
     if (fromUnit === toUnitId) return;
 
     const visited = new Uint8Array(w * h);
@@ -630,6 +633,7 @@ export class HeatSimulation {
       visited[n] = 1;
 
       const c = cells[n];
+      if (!c) continue;
       if (c.materialId !== fromMat) continue;
       if (c.unitId !== fromUnit) continue;
 

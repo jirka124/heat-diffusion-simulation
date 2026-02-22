@@ -153,6 +153,7 @@
                     />
                     <q-file
                       class="q-mt-sm"
+                      :model-value="null"
                       dense
                       outlined
                       clearable
