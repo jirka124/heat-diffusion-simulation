@@ -12,7 +12,7 @@ import type {
 
 const LOOP_MS = 4;
 const IDLE_LOOP_MS = 50;
-const PROFILE_STEP_WORLD = true;
+const PROFILE_STEP_WORLD = false;
 const PROFILE_STEP_WORLD_REPORT_EVERY_STEPS = 1000;
 const DEFAULT_SNAPSHOT_FPS_LIMIT = 12;
 const MIN_SNAPSHOT_FPS_LIMIT = 1;
