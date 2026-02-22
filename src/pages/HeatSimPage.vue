@@ -925,7 +925,6 @@ import {
   OUTSIDE_TARGET_ID,
   SHARED_UNIT_ID,
   type Material,
-  type TempRange,
   type Unit,
   type UnitParams,
 } from 'src/sim/heatWorld';
@@ -934,12 +933,29 @@ import type { ExportSimulationSetup, SimulationConfig } from 'src/sim/heatSimula
 import { HeatSimulationWorkerClient } from 'src/sim/heatSimulationWorkerClient';
 import type { RuntimeUnitRow } from 'src/sim/heatSimulation';
 import type { HeatWorldSnapshot, SimulationSnapshot } from 'src/sim/heatWorkerProtocol';
+import {
+  HeatSimCanvasRenderer,
+  getMinMaxSnapshot,
+  type HeatSimViewMode,
+} from 'src/pages/heat-sim/heatSimCanvasRenderer';
+import {
+  clamp,
+  fmtHm,
+  fmtHmsFromSec,
+  fmtRange,
+  fmtSimTime,
+  formatEnergySI,
+  formatPowerSI,
+  normalizeMaterialId,
+  normalizeUnitId,
+  normRange,
+} from 'src/pages/heat-sim/heatSimUtils';
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 const viewportEl = ref<HTMLDivElement | null>(null);
 const contentEl = ref<HTMLDivElement | null>(null);
 const importSetupInputEl = ref<HTMLInputElement | null>(null);
-let imgData: ImageData | null = null;
+const canvasRenderer = new HeatSimCanvasRenderer();
 
 const tab = ref<'sim' | 'edit' | 'mats' | 'units'>('sim');
 const cfg = reactive({
@@ -1179,7 +1195,7 @@ const autoScale = ref(true);
 const minT = ref(0);
 const maxT = ref(60);
 
-type ViewMode = 'infra' | 'temp' | 'combo' | 'units';
+type ViewMode = HeatSimViewMode;
 const viewMode = ref<ViewMode>('combo');
 const comboAlpha = ref(20);
 
@@ -1341,10 +1357,6 @@ function onPanUp() {
   panning = false;
 }
 
-function clamp(v: number, a: number, b: number) {
-  return Math.max(a, Math.min(b, v));
-}
-
 function zoomAt(clientX: number, clientY: number, newScale: number) {
   const vp = viewportEl.value;
   const wld = world.value;
@@ -1378,81 +1390,6 @@ function onWheel(evt: WheelEvent) {
   zoomAt(evt.clientX, evt.clientY, scale.value * factor);
 }
 
-function fmtSimTime(secTotal: number) {
-  const sec = Math.max(0, Math.floor(secTotal));
-  const days = Math.floor(sec / 86400);
-  const h = Math.floor((sec % 86400) / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  const hh = String(h).padStart(2, '0');
-  const mm = String(m).padStart(2, '0');
-  const ss = String(s).padStart(2, '0');
-  return days > 0 ? `Day ${days} ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
-}
-
-function fmtHm(minOfDay: number) {
-  const m = ((Math.floor(minOfDay) % 1440) + 1440) % 1440;
-  const hh = String(Math.floor(m / 60)).padStart(2, '0');
-  const mm = String(m % 60).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
-
-function fmtHmsFromSec(secOfDayValue: number) {
-  const s = ((Math.floor(secOfDayValue) % 86400) + 86400) % 86400;
-  const hh = String(Math.floor(s / 3600)).padStart(2, '0');
-  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
-  const ss = String(s % 60).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
-}
-
-function fmtRange(r: TempRange) {
-  return `${r.min}-${r.max} C`;
-}
-
-function formatPowerSI(value: number) {
-  const abs = Math.abs(value);
-  const sign = value < 0 ? '-' : '';
-  const units: Array<{ factor: number; symbol: string }> = [
-    { factor: 1e9, symbol: 'GW' },
-    { factor: 1e6, symbol: 'MW' },
-    { factor: 1e3, symbol: 'kW' },
-    { factor: 1, symbol: 'W' },
-  ];
-
-  for (const u of units) {
-    if (abs >= u.factor) {
-      const scaled = abs / u.factor;
-      const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
-      return `${sign}${scaled.toFixed(digits)} ${u.symbol}`;
-    }
-  }
-
-  return `${sign}${abs.toFixed(2)} W`;
-}
-
-function formatEnergySI(value: number) {
-  const abs = Math.abs(value);
-  const sign = value < 0 ? '-' : '';
-  const units: Array<{ factor: number; symbol: string }> = [
-    { factor: 1e9, symbol: 'GJ' },
-    { factor: 1e6, symbol: 'MJ' },
-    { factor: 1e3, symbol: 'kJ' },
-    { factor: 1, symbol: 'J' },
-    { factor: 1e-3, symbol: 'mJ' },
-    { factor: 1e-6, symbol: 'uJ' },
-  ];
-
-  for (const u of units) {
-    if (abs >= u.factor) {
-      const scaled = abs / u.factor;
-      const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
-      return `${sign}${scaled.toFixed(digits)} ${u.symbol}`;
-    }
-  }
-
-  return `${value.toExponential(2)} J`;
-}
-
 function flowTargetColor(targetId: string) {
   if (targetId === OUTSIDE_TARGET_ID) return '#0B1B2B';
   return getUnitById(targetId)?.color ?? '#666666';
@@ -1471,70 +1408,6 @@ function setupCanvasSize() {
   canvasEl.value.style.cursor = paintTool.value === 'pick' ? 'crosshair' : 'cell';
 }
 
-function getMinMaxSnapshot(snapshot: HeatWorldSnapshot) {
-  let min = Infinity;
-  let max = -Infinity;
-  for (const c of snapshot.cells) {
-    if (c.T < min) min = c.T;
-    if (c.T > max) max = c.T;
-  }
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: 0, max: 1 };
-  if (min === max) return { min, max: min + 1e-9 };
-  return { min, max };
-}
-
-function clamp01(x: number) {
-  return Math.max(0, Math.min(1, x));
-}
-
-function normRange(min: number, max: number): TempRange {
-  const a = Number(min);
-  const b = Number(max);
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return { min: 0, max: 0 };
-  return a <= b ? { min: a, max: b } : { min: b, max: a };
-}
-
-function heatColor(t01: number) {
-  const x = clamp01(t01);
-  if (x < 0.33) {
-    const k = x / 0.33;
-    return [0, Math.round(255 * k), 255] as const;
-  }
-  if (x < 0.66) {
-    const k = (x - 0.33) / 0.33;
-    return [Math.round(255 * k), 255, Math.round(255 * (1 - k))] as const;
-  }
-  const k = (x - 0.66) / 0.34;
-  return [255, Math.round(255 * (1 - k)), 0] as const;
-}
-
-function hexToRgb(hex: string): [number, number, number] {
-  const s = hex.replace('#', '').trim();
-  const full =
-    s.length === 3
-      ? s
-          .split('')
-          .map((c) => c + c)
-          .join('')
-      : s;
-  const n = parseInt(full, 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-}
-
-function getUnitColor(unitId: string | null): [number, number, number] {
-  if (!unitId) return [30, 30, 30];
-  const u = getUnitById(unitId);
-  if (!u) return [120, 120, 120];
-  return hexToRgb(u.color);
-}
-
-function ensureImageData(w: number, h: number, ctx: CanvasRenderingContext2D) {
-  if (!imgData || imgData.width !== w || imgData.height !== h) {
-    imgData = ctx.createImageData(w, h);
-  }
-  return imgData;
-}
-
 function requestRender(force = false) {
   needsRender = true;
   if (force) forcedRender = true;
@@ -1545,59 +1418,15 @@ function render() {
   const ctx = canvasEl.value.getContext('2d');
   if (!ctx) return;
 
-  const { w, h, cells, materials } = world.value;
-
-  let mn = minT.value;
-  let mx = maxT.value;
-  if ((viewMode.value === 'temp' || viewMode.value === 'combo') && autoScale.value) {
-    const mm = getMinMaxSnapshot(world.value);
-    mn = mm.min;
-    mx = mm.max;
-    minT.value = mn;
-    maxT.value = mx;
-  }
-  const denom = mx - mn || 1e-9;
-  const alpha = Math.round((comboAlpha.value / 100) * 255);
-  const img = ensureImageData(w, h, ctx);
-
-  for (let i = 0; i < cells.length; i++) {
-    const c = cells[i];
-    if (!c) continue;
-    const m = materials[c.materialId];
-    const [br, bg, bb] = m ? hexToRgb(m.color) : ([80, 80, 80] as const);
-
-    let r = br;
-    let g = bg;
-    let b = bb;
-
-    if (viewMode.value === 'temp' || viewMode.value === 'combo') {
-      const [tr, tg, tb] = heatColor((c.T - mn) / denom);
-      if (viewMode.value === 'temp') {
-        r = tr;
-        g = tg;
-        b = tb;
-      } else {
-        r = Math.round((tr * alpha + br * (255 - alpha)) / 255);
-        g = Math.round((tg * alpha + bg * (255 - alpha)) / 255);
-        b = Math.round((tb * alpha + bb * (255 - alpha)) / 255);
-      }
-    } else if (viewMode.value === 'units') {
-      if (c.unitId) {
-        const [ur, ug, ub] = getUnitColor(c.unitId);
-        r = Math.round((ur * alpha + br * (255 - alpha)) / 255);
-        g = Math.round((ug * alpha + bg * (255 - alpha)) / 255);
-        b = Math.round((ub * alpha + bb * (255 - alpha)) / 255);
-      }
-    }
-
-    const p = i * 4;
-    img.data[p + 0] = r;
-    img.data[p + 1] = g;
-    img.data[p + 2] = b;
-    img.data[p + 3] = 255;
-  }
-
-  ctx.putImageData(img, 0, 0);
+  const result = canvasRenderer.render(ctx, world.value, {
+    viewMode: viewMode.value,
+    comboAlpha: comboAlpha.value,
+    autoScale: autoScale.value,
+    minT: minT.value,
+    maxT: maxT.value,
+  });
+  if (result.minT !== minT.value) minT.value = result.minT;
+  if (result.maxT !== maxT.value) maxT.value = result.maxT;
 }
 
 async function setup() {
@@ -1746,18 +1575,10 @@ function openEdit(id: string) {
   matDialog.open = true;
 }
 
-function normalizeId(s: string) {
-  return s
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9-]/g, '');
-}
-
 async function saveMaterial() {
   if (locked.value || !world.value || !simulationClient) return;
 
-  const id = matDialog.mode === 'add' ? normalizeId(matForm.id) : matForm.id;
+  const id = matDialog.mode === 'add' ? normalizeMaterialId(matForm.id) : matForm.id;
   if (!id) return;
 
   const material: Material = {
@@ -1826,14 +1647,6 @@ function openEditUnit(id: string) {
   }
 
   unitDialog.open = true;
-}
-
-function normalizeUnitId(s: string) {
-  return s
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, '')
-    .replace(/[^A-Z0-9_-]/g, '');
 }
 
 async function saveUnit() {
