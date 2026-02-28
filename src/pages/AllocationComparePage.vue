@@ -23,8 +23,8 @@
           </q-card-section>
           <q-separator />
           <q-card-section class="text-caption text-grey-7">
-            <b>How to read:</b> each imported file is one experiment (E1, E2, ...). In per-unit
-            table, each row is an experiment and each unit column shows selected metric value.
+            <b>How to read:</b> each imported file is one source experiment (E1, E2, ...). For
+            combined exports, the page creates one row per method (Fair/Practice).
           </q-card-section>
           <input
             ref="importInputEl"
@@ -78,6 +78,9 @@
                         @click="removeExperiment(exp.id)"
                       />
                     </div>
+                    <div class="text-caption q-mt-xs">
+                      Source: <b>{{ exp.sourceLabel }}</b> | Method: <b>{{ exp.methodLabel }}</b>
+                    </div>
                     <div class="text-caption text-grey-7 q-mt-xs ellipsis">{{ exp.fileName }}</div>
                     <div class="text-caption q-mt-sm">
                       Units: <b>{{ exp.payload.units.length }}</b> |
@@ -102,6 +105,8 @@
               <thead>
                 <tr>
                   <th class="text-left">Experiment</th>
+                  <th class="text-left">Source</th>
+                  <th class="text-left">Method</th>
                   <th class="text-left">Name</th>
                   <th class="text-right">Units</th>
                   <th class="text-right">Total cost</th>
@@ -115,6 +120,8 @@
                   <td>
                     <q-badge :style="{ background: exp.color }">{{ exp.label }}</q-badge>
                   </td>
+                  <td>{{ exp.sourceLabel }}</td>
+                  <td>{{ exp.methodLabel }}</td>
                   <td>{{ exp.payload.name }}</td>
                   <td class="text-right">{{ exp.payload.units.length }}</td>
                   <td class="text-right">{{ formatNumber(exp.payload.effectiveTotalCost ?? 0) }}</td>
@@ -147,18 +154,20 @@
               <q-markup-table dense flat bordered>
                 <thead>
                   <tr>
-                    <th class="text-left">Experiment</th>
-                    <th class="text-left">Name</th>
-                    <th v-for="unitId in allUnitIds" :key="`head-${unitId}`" class="text-right">
-                      {{ unitNameById(unitId) }} ({{ unitId }})
-                    </th>
-                  </tr>
+                  <th class="text-left">Experiment</th>
+                  <th class="text-left">Method</th>
+                  <th class="text-left">Name</th>
+                  <th v-for="unitId in allUnitIds" :key="`head-${unitId}`" class="text-right">
+                    {{ unitNameById(unitId) }} ({{ unitId }})
+                  </th>
+                </tr>
                 </thead>
                 <tbody>
                   <tr v-for="exp in experiments" :key="`detail-${exp.id}`">
                     <td>
                       <q-badge :style="{ background: exp.color }">{{ exp.label }}</q-badge>
                     </td>
+                    <td>{{ exp.methodLabel }}</td>
                     <td>{{ exp.payload.name }}</td>
                     <td
                       v-for="unitId in allUnitIds"
@@ -209,6 +218,13 @@ type AllocationUnitExport = {
   paymentHappinessScore: number;
 };
 
+type SimulationResultsLike = {
+  version: number;
+  name: string;
+  totalHouseHeatingEnergyJ: number;
+  units: unknown[];
+};
+
 type AllocationExport = {
   version: 1;
   name: string;
@@ -217,12 +233,35 @@ type AllocationExport = {
   units: AllocationUnitExport[];
 };
 
+type AllocationMethodId = 'fair' | 'practical' | 'unknown';
+
+type AllocationMethodExport = {
+  algorithm: AllocationMethodId;
+  label?: string;
+  practicalBaseShareRatio?: number | null;
+  units: AllocationUnitExport[];
+};
+
+type AllocationBundleExport = {
+  version: 2;
+  name: string;
+  generatedAt?: string;
+  effectiveTotalCost: number | null;
+  methods: {
+    fair?: AllocationMethodExport;
+    practical?: AllocationMethodExport;
+  };
+};
+
 type LoadedExperiment = {
   id: string;
   fileName: string;
   payload: AllocationExport;
   label: string;
   color: string;
+  sourceLabel: string;
+  methodLabel: string;
+  algorithm: AllocationMethodId;
 };
 
 type MetricMode = 'cost' | 'share' | 'comfort' | 'happiness';
@@ -286,6 +325,125 @@ function isAllocationExport(raw: unknown): raw is AllocationExport {
       typeof uu.paymentHappinessScore === 'number'
     );
   });
+}
+
+function isSimulationResultsLike(raw: unknown): raw is SimulationResultsLike {
+  if (!raw || typeof raw !== 'object') return false;
+  const x = raw as Record<string, unknown>;
+  if (x.version !== 1) return false;
+  if (typeof x.name !== 'string') return false;
+  if (typeof x.totalHouseHeatingEnergyJ !== 'number') return false;
+  if (!Array.isArray(x.units)) return false;
+  return true;
+}
+
+function isAllocationMethodExport(raw: unknown): raw is AllocationMethodExport {
+  if (!raw || typeof raw !== 'object') return false;
+  const x = raw as Record<string, unknown>;
+  if (!Array.isArray(x.units)) return false;
+  if (x.algorithm != null && typeof x.algorithm !== 'string') return false;
+
+  return x.units.every((u) => {
+    if (!u || typeof u !== 'object') return false;
+    const uu = u as Record<string, unknown>;
+    return (
+      typeof uu.id === 'string' &&
+      typeof uu.name === 'string' &&
+      typeof uu.share === 'number' &&
+      typeof uu.cost === 'number' &&
+      (typeof uu.comfortScore === 'number' || uu.comfortScore === null) &&
+      typeof uu.paymentHappinessScore === 'number'
+    );
+  });
+}
+
+function isAllocationBundleExport(raw: unknown): raw is AllocationBundleExport {
+  if (!raw || typeof raw !== 'object') return false;
+  const x = raw as Record<string, unknown>;
+  if (x.version !== 2) return false;
+  if (typeof x.name !== 'string') return false;
+  if (!(typeof x.effectiveTotalCost === 'number' || x.effectiveTotalCost === null)) return false;
+  if (!x.methods || typeof x.methods !== 'object') return false;
+
+  const methods = x.methods as Record<string, unknown>;
+  const fair = methods.fair;
+  const practical = methods.practical;
+  if (!fair && !practical) return false;
+  if (fair && !isAllocationMethodExport(fair)) return false;
+  if (practical && !isAllocationMethodExport(practical)) return false;
+  return true;
+}
+
+function methodLabelFor(id: AllocationMethodId) {
+  if (id === 'fair') return 'Fair';
+  if (id === 'practical') return 'Practice';
+  return 'Unknown';
+}
+
+function normalizeAllocationPayloads(raw: unknown): Array<{
+  payload: AllocationExport;
+  algorithm: AllocationMethodId;
+  methodLabel: string;
+}> {
+  if (isAllocationExport(raw)) {
+    return [
+      {
+        payload: raw,
+        algorithm: 'unknown',
+        methodLabel: 'Legacy',
+      },
+    ];
+  }
+
+  if (isAllocationBundleExport(raw)) {
+    const out: Array<{
+      payload: AllocationExport;
+      algorithm: AllocationMethodId;
+      methodLabel: string;
+    }> = [];
+
+    const entries: Array<[AllocationMethodId, AllocationMethodExport | undefined]> = [
+      ['fair', raw.methods.fair],
+      ['practical', raw.methods.practical],
+    ];
+
+    for (const [algorithm, method] of entries) {
+      if (!method) continue;
+      const label = method.label?.trim() || methodLabelFor(algorithm);
+      out.push({
+        payload: {
+          version: 1,
+          name: `${raw.name} [${label}]`,
+          effectiveTotalCost: raw.effectiveTotalCost,
+          units: method.units,
+          ...(typeof raw.generatedAt === 'string' ? { generatedAt: raw.generatedAt } : {}),
+        },
+        algorithm,
+        methodLabel: methodLabelFor(algorithm),
+      });
+    }
+    return out;
+  }
+
+  return [];
+}
+
+function extractAllocationPayloadCandidate(parsed: unknown) {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  const x = parsed as Record<string, unknown>;
+
+  const directCandidates = [
+    x.allocation,
+    x.allocationExport,
+    x.costAllocation,
+    x.costAllocationExport,
+    x.payload,
+    parsed,
+  ];
+  for (const candidate of directCandidates) {
+    if (candidate && typeof candidate === 'object') return candidate;
+  }
+  return parsed;
 }
 
 function unitValue(units: AllocationUnitExport[], unitId: string) {
@@ -372,28 +530,42 @@ async function onFilesSelected(evt: Event) {
   if (!files || files.length === 0) return;
 
   const next: LoadedExperiment[] = [];
+  let sourceOffset = experiments.value.length;
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (!file) continue;
     try {
       const text = await file.text();
       const parsed: unknown = JSON.parse(text);
-      const payload =
-        parsed && typeof parsed === 'object'
-          ? ((parsed as Record<string, unknown>).allocation ?? parsed)
-          : parsed;
-      if (!isAllocationExport(payload)) throw new Error('Invalid allocation export format');
+      const payloadRaw = extractAllocationPayloadCandidate(parsed);
 
-      const index = experiments.value.length + next.length;
-      next.push({
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        fileName: file.name,
-        payload,
-        label: `E${index + 1}`,
-        color: COLORS[index % COLORS.length] ?? '#607d8b',
-      });
-    } catch {
-      window.alert(`Could not import file: ${file.name}`);
+      if (isSimulationResultsLike(payloadRaw)) {
+        throw new Error('simulation-results');
+      }
+      const normalized = normalizeAllocationPayloads(payloadRaw);
+      if (normalized.length === 0) throw new Error('Invalid allocation export format');
+
+      const sourceLabel = `E${sourceOffset + 1}`;
+      for (const part of normalized) {
+        const index = experiments.value.length + next.length;
+        next.push({
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          fileName: file.name,
+          payload: part.payload,
+          label: `R${index + 1}`,
+          color: COLORS[index % COLORS.length] ?? '#607d8b',
+          sourceLabel,
+          methodLabel: part.methodLabel,
+          algorithm: part.algorithm,
+        });
+      }
+      sourceOffset++;
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message === 'simulation-results'
+          ? `Could not import file: ${file.name}\nThis is a simulation results export. Import it in Cost Allocation page first, then export allocation JSON and import that here.`
+          : `Could not import file: ${file.name}`;
+      window.alert(message);
     }
   }
 
@@ -405,7 +577,7 @@ function removeExperiment(id: string) {
   experiments.value = experiments.value.filter((x) => x.id !== id);
   experiments.value = experiments.value.map((x, i) => ({
     ...x,
-    label: `E${i + 1}`,
+    label: `R${i + 1}`,
     color: COLORS[i % COLORS.length] ?? '#607d8b',
   }));
 }
