@@ -190,6 +190,41 @@
                     now | total
                     <b>{{ formatEnergySI(houseHeatingTotalJ) }}</b>
                   </div>
+                  <div class="heat-balance-card q-mb-sm">
+                    <div class="text-caption text-grey-7">
+                      Heat balance (cumulative): supplied vs net to outside.
+                    </div>
+                    <div class="text-caption q-mt-xs">
+                      Supplied: <b>{{ formatEnergySI(heatBalanceLatest?.suppliedTotalJ ?? 0) }}</b>
+                      |
+                      Outside net: <b>{{ formatEnergySI(heatBalanceLatest?.outsideNetTotalJ ?? 0) }}</b>
+                    </div>
+                    <div v-if="heatBalancePlot != null" class="heat-balance-plot q-mt-xs">
+                      <svg
+                        class="heat-balance-svg"
+                        :viewBox="`0 0 ${heatBalancePlot.width} ${heatBalancePlot.height}`"
+                        preserveAspectRatio="none"
+                      >
+                        <polyline
+                          class="curve-supplied"
+                          fill="none"
+                          :points="heatBalancePlot.suppliedPoints"
+                        />
+                        <polyline
+                          class="curve-outside"
+                          fill="none"
+                          :points="heatBalancePlot.outsidePoints"
+                        />
+                      </svg>
+                    </div>
+                    <div v-else class="text-caption text-grey-7 q-mt-xs">
+                      Run at least two ticks to render the balance curve.
+                    </div>
+                    <div class="heat-balance-legend q-mt-xs">
+                      <span class="legend-item"><i class="legend-dot supplied"></i>Supplied</span>
+                      <span class="legend-item"><i class="legend-dot outside"></i>Outside net</span>
+                    </div>
+                  </div>
                   <q-list bordered separator class="q-mt-sm">
                     <q-item v-for="r in runtimeUnitRows" :key="r.id">
                       <q-item-section avatar>
@@ -1010,6 +1045,14 @@ const world = ref<HeatWorldSnapshot | null>(null);
 const runtimeRowsRaw = ref<RuntimeUnitRow[]>([]);
 const worldVersion = ref(0);
 const showZoneDebug = ref(false);
+const heatBalanceHistory = ref<
+  Array<{
+    tick: number;
+    suppliedTotalJ: number;
+    outsideNetTotalJ: number;
+  }>
+>([]);
+const lastHeatBalanceTick = ref(-1);
 
 const tick = ref(0);
 const simTimeSec = ref(0);
@@ -1035,6 +1078,7 @@ function applySnapshot(snapshot: SimulationSnapshot) {
   tick.value = snapshot.tick;
   simTimeSec.value = snapshot.simTimeSec;
   running.value = snapshot.running;
+  updateHeatBalanceHistory(snapshot.tick, snapshot.runtimeRows);
 
   if (world.value && (world.value.w !== prevW || world.value.h !== prevH)) {
     setupCanvasSize();
@@ -1045,6 +1089,55 @@ function applySnapshot(snapshot: SimulationSnapshot) {
 
   bumpWorld();
   requestRender();
+}
+
+function totalSuppliedEnergyJ(rows: RuntimeUnitRow[]) {
+  return rows.reduce((sum, r) => sum + (r.emitterEnergyTotalJ ?? 0), 0);
+}
+
+function totalOutsideNetFlowJ(rows: RuntimeUnitRow[]) {
+  let total = 0;
+  for (const row of rows) {
+    for (const flow of row.heatFlows) {
+      if (flow.targetId === OUTSIDE_TARGET_ID) total += flow.total;
+    }
+  }
+  return total;
+}
+
+function updateHeatBalanceHistory(nextTick: number, rows: RuntimeUnitRow[]) {
+  if (nextTick <= 0) {
+    heatBalanceHistory.value = [];
+    lastHeatBalanceTick.value = -1;
+    return;
+  }
+
+  if (nextTick < lastHeatBalanceTick.value) {
+    heatBalanceHistory.value = [];
+    lastHeatBalanceTick.value = -1;
+  }
+
+  const suppliedTotalJ = totalSuppliedEnergyJ(rows);
+  const outsideNetTotalJ = totalOutsideNetFlowJ(rows);
+
+  if (nextTick === lastHeatBalanceTick.value && heatBalanceHistory.value.length > 0) {
+    heatBalanceHistory.value[heatBalanceHistory.value.length - 1] = {
+      tick: nextTick,
+      suppliedTotalJ,
+      outsideNetTotalJ,
+    };
+    return;
+  }
+
+  heatBalanceHistory.value.push({
+    tick: nextTick,
+    suppliedTotalJ,
+    outsideNetTotalJ,
+  });
+  if (heatBalanceHistory.value.length > 600) {
+    heatBalanceHistory.value.splice(0, heatBalanceHistory.value.length - 600);
+  }
+  lastHeatBalanceTick.value = nextTick;
 }
 
 function getRenderFpsLimit() {
@@ -1304,6 +1397,44 @@ const houseHeatingPowerW = computed(() =>
 const houseHeatingTotalJ = computed(() =>
   runtimeRowsRaw.value.reduce((sum, r) => sum + (r.emitterEnergyTotalJ ?? 0), 0),
 );
+const heatBalanceLatest = computed(() => {
+  const n = heatBalanceHistory.value.length;
+  return n > 0 ? heatBalanceHistory.value[n - 1] : null;
+});
+const heatBalancePlot = computed(() => {
+  const history = heatBalanceHistory.value;
+  if (history.length < 2) return null;
+
+  const width = 640;
+  const height = 140;
+  const pad = 8;
+  const values = history.flatMap((p) => [p.suppliedTotalJ, p.outsideNetTotalJ]);
+  let minV = Math.min(...values);
+  let maxV = Math.max(...values);
+  if (!Number.isFinite(minV) || !Number.isFinite(maxV)) return null;
+  if (minV === maxV) {
+    minV -= 1;
+    maxV += 1;
+  }
+
+  const n = history.length;
+  const dx = n > 1 ? (width - pad * 2) / (n - 1) : 0;
+  const toY = (v: number) => {
+    const t = (v - minV) / (maxV - minV);
+    return height - pad - t * (height - pad * 2);
+  };
+  const mkPoints = (selector: (p: (typeof history)[number]) => number) =>
+    history
+      .map((p, i) => `${(pad + i * dx).toFixed(2)},${toY(selector(p)).toFixed(2)}`)
+      .join(' ');
+
+  return {
+    width,
+    height,
+    suppliedPoints: mkPoints((p) => p.suppliedTotalJ),
+    outsidePoints: mkPoints((p) => p.outsideNetTotalJ),
+  };
+});
 
 const runtimeUnitRows = computed(() => {
   void worldVersion.value;
@@ -2013,4 +2144,65 @@ onBeforeUnmount(() => {
   gap: 10px;
   font-variant-numeric: tabular-nums;
 }
+
+.heat-balance-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.heat-balance-plot {
+  width: 100%;
+  height: 120px;
+}
+
+.heat-balance-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+}
+
+.curve-supplied {
+  stroke: #ffb300;
+  stroke-width: 2;
+}
+
+.curve-outside {
+  stroke: #26c6da;
+  stroke-width: 2;
+}
+
+.heat-balance-legend {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #2d2d2d;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.legend-dot.supplied {
+  background: #ffb300;
+}
+
+.legend-dot.outside {
+  background: #26c6da;
+}
+
 </style>
