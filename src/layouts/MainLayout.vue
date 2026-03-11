@@ -49,6 +49,12 @@ const navItems = [
     to: '/',
   },
   {
+    label: 'Model Overview',
+    caption: 'Basic model documentation',
+    icon: 'description',
+    to: '/model',
+  },
+  {
     label: 'Heat Simulation',
     caption: 'Build and run experiment',
     icon: 'device_thermostat',

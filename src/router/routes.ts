@@ -6,6 +6,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('layouts/MainLayout.vue'),
     children: [
       { path: '', component: () => import('pages/IndexPage.vue') },
+      { path: 'model', component: () => import('pages/ModelOverviewPage.vue') },
       { path: 'heat', component: () => import('pages/HeatSimPage.vue') },
       { path: 'costs', component: () => import('pages/CostAllocationPage.vue') },
       { path: 'compare', component: () => import('pages/AllocationComparePage.vue') },

@@ -1,5 +1,8 @@
 import type { SimulationResultsExport, UnitResultExport } from 'src/sim/heatSimulation';
-import type { AllocationComputation, AllocationRow } from 'src/pages/cost-allocation/allocationTypes';
+import type {
+  AllocationComputation,
+  AllocationRow,
+} from 'src/pages/cost-allocation/allocationTypes';
 import { emptyAllocationComputation } from 'src/pages/cost-allocation/allocationTypes';
 
 type CommonComputeInput = {
@@ -94,14 +97,18 @@ function createBaseRow(unit: UnitResultExport): AllocationRow {
 }
 
 function payerUnitsOf(data: SimulationResultsExport, sharedUnitId: string | null) {
-  const sharedUnit = sharedUnitId ? data.units.find((u) => u.id === sharedUnitId) ?? null : null;
+  const sharedUnit = sharedUnitId ? (data.units.find((u) => u.id === sharedUnitId) ?? null) : null;
   return {
     sharedUnit,
     payerUnits: data.units.filter((u) => u.id !== sharedUnit?.id),
   };
 }
 
-function enforcePracticalAreaCostBounds(rows: AllocationRow[], basePoolJ: number, variablePoolJ: number) {
+function enforcePracticalAreaCostBounds(
+  rows: AllocationRow[],
+  basePoolJ: number,
+  variablePoolJ: number,
+) {
   const totalArea = rows.reduce((s, r) => s + Math.max(0, r.areaCells), 0);
   if (totalArea <= 0 || variablePoolJ <= 0) return;
 
@@ -292,7 +299,8 @@ export function computePracticalAllocation(input: PracticalComputeInput): Alloca
   const rows: AllocationRow[] = [];
   for (const unit of payerUnits) {
     const row = createBaseRow(unit);
-    const areaShare = totalArea > 0 ? Math.max(0, unit.areaCells) / totalArea : 1 / payerUnits.length;
+    const areaShare =
+      totalArea > 0 ? Math.max(0, unit.areaCells) / totalArea : 1 / payerUnits.length;
     row.baseCostJ = basePoolJ * areaShare;
 
     const unitDensity = Math.max(1e-9, lossDensityByUnit.get(unit.id) ?? 0);
@@ -305,7 +313,8 @@ export function computePracticalAllocation(input: PracticalComputeInput): Alloca
   const correctedSum = rows.reduce((s, r) => s + Math.max(0, r.correctedConsumptionJ ?? 0), 0);
   for (const row of rows) {
     if (correctedSum > 0) {
-      row.sharedCostJ = (variablePoolJ * Math.max(0, row.correctedConsumptionJ ?? 0)) / correctedSum;
+      row.sharedCostJ =
+        (variablePoolJ * Math.max(0, row.correctedConsumptionJ ?? 0)) / correctedSum;
     } else {
       const areaShare = totalArea > 0 ? Math.max(0, row.areaCells) / totalArea : 1 / rows.length;
       row.sharedCostJ = variablePoolJ * areaShare;

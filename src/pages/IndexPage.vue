@@ -6,7 +6,7 @@
     </div>
 
     <div class="row q-col-gutter-md">
-      <div v-for="item in entries" :key="item.to" class="col-12 col-md-4">
+      <div v-for="item in entries" :key="item.to" class="col-12 col-md-6 col-lg-3">
         <q-card class="nav-card cursor-pointer" clickable v-ripple @click="goTo(item.to)">
           <q-card-section class="row items-center q-gutter-sm">
             <q-icon :name="item.icon" size="28px" color="primary" />
@@ -31,6 +31,12 @@ import { useRouter } from 'vue-router';
 const router = useRouter();
 
 const entries = [
+  {
+    title: 'Model Overview',
+    caption: 'Basic description of the model and how to work with it.',
+    icon: 'description',
+    to: '/model',
+  },
   {
     title: 'Heat Simulation',
     caption: 'Create and run thermal simulation experiments.',
