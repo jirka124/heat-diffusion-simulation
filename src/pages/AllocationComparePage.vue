@@ -49,7 +49,7 @@
                 spread
                 unelevated
                 :options="[
-                  { label: 'Cost', value: 'cost' },
+                  { label: 'Cost [Kč]', value: 'cost' },
                   { label: 'Share', value: 'share' },
                   { label: 'Comfort', value: 'comfort' },
                   { label: 'Pay happiness', value: 'happiness' },
@@ -84,7 +84,7 @@
                     <div class="text-caption text-grey-7 q-mt-xs ellipsis">{{ exp.fileName }}</div>
                     <div class="text-caption q-mt-sm">
                       Units: <b>{{ exp.payload.units.length }}</b> |
-                      Total cost: <b>{{ formatNumber(exp.payload.effectiveTotalCost ?? 0) }}</b>
+                      Total cost: <b>{{ formatCurrency(exp.payload.effectiveTotalCost ?? 0) }}</b>
                     </div>
                   </q-card-section>
                 </q-card>
@@ -109,7 +109,7 @@
                   <th class="text-left">Method</th>
                   <th class="text-left">Name</th>
                   <th class="text-right">Units</th>
-                  <th class="text-right">Total cost</th>
+                  <th class="text-right">Total cost [Kč]</th>
                   <th class="text-right">Avg comfort</th>
                   <th class="text-right">Avg pay happiness</th>
                   <th class="text-right">Min pay happiness</th>
@@ -124,7 +124,7 @@
                   <td>{{ exp.methodLabel }}</td>
                   <td>{{ exp.payload.name }}</td>
                   <td class="text-right">{{ exp.payload.units.length }}</td>
-                  <td class="text-right">{{ formatNumber(exp.payload.effectiveTotalCost ?? 0) }}</td>
+                  <td class="text-right">{{ formatCurrency(exp.payload.effectiveTotalCost ?? 0) }}</td>
                   <td class="text-right">{{ formatMaybe(avgComfort(exp.payload.units)) }}</td>
                   <td class="text-right">{{ formatNumber(avgHappiness(exp.payload.units)) }}</td>
                   <td class="text-right">{{ formatNumber(minHappiness(exp.payload.units)) }}</td>
@@ -278,6 +278,10 @@ function formatNumber(v: number) {
 
 function formatMaybe(v: number | null) {
   return v == null ? '-' : formatNumber(v);
+}
+
+function formatCurrency(v: number) {
+  return `${formatNumber(v)} Kč`;
 }
 
 function avgComfort(units: AllocationUnitExport[]) {
@@ -463,13 +467,14 @@ function unitMetric(units: AllocationUnitExport[], unitId: string) {
 }
 
 const metricLabelTitle = computed(() => {
-  if (metricMode.value === 'cost') return 'Cost';
+  if (metricMode.value === 'cost') return 'Cost [Kč]';
   if (metricMode.value === 'share') return 'Share';
   if (metricMode.value === 'comfort') return 'Comfort';
   return 'Pay happiness';
 });
 
 function metricValueLabel(value: number) {
+  if (metricMode.value === 'cost') return formatCurrency(value);
   if (metricMode.value === 'share') return `${value.toFixed(2)} %`;
   return formatNumber(value);
 }

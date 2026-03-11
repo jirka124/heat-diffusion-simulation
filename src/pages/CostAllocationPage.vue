@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <q-page class="q-pa-md">
     <div class="row q-col-gutter-md">
       <div class="col-12 col-lg-6">
@@ -40,8 +40,8 @@
               spread
               unelevated
               :options="[
-                { label: 'Total price', value: 'total' },
-                { label: 'Price per J', value: 'perJ' },
+                { label: 'Total price [Kč]', value: 'total' },
+                { label: 'Price per J [Kč/J]', value: 'perJ' },
               ]"
             />
             <q-input
@@ -50,8 +50,8 @@
               dense
               outlined
               clearable
-              label="Total price"
-              hint="This value is used as final total cost."
+              label="Total price [Kč]"
+              hint="This value is used as final total cost in CZK."
             />
             <q-input
               v-else
@@ -59,12 +59,12 @@
               dense
               outlined
               clearable
-              label="Price per J"
-              hint="Final total cost = pricePerJ * totalHouseHeatingEnergyJ."
+              label="Price per J [Kč/J] cca 0.0000027"
+              hint="Final total cost [Kč] = pricePerJ [Kč/J] * totalHouseHeatingEnergyJ [J]."
             />
 
             <div class="text-caption text-grey-7">
-              Effective total cost:
+              Effective total cost [Kč]:
               <b>{{ effectiveTotalCostLabel }}</b>
               <span v-if="effectiveTotalCostSource">({{ effectiveTotalCostSource }})</span>
             </div>
@@ -124,15 +124,25 @@
           <q-separator />
           <q-card-section v-if="resultData">
             <div class="q-gutter-xs">
-              <div>Name: <b>{{ resultData.name }}</b></div>
-              <div>Simulation length: <b>{{ formatNumber(resultData.simulationLengthSec) }} s</b></div>
-              <div>Tick: <b>{{ formatNumber(resultData.tick) }}</b></div>
-              <div>Ended: <b>{{ resultData.ended ? 'yes' : 'no' }}</b></div>
+              <div>
+                Name: <b>{{ resultData.name }}</b>
+              </div>
+              <div>
+                Simulation length: <b>{{ formatNumber(resultData.simulationLengthSec) }} s</b>
+              </div>
+              <div>
+                Tick: <b>{{ formatNumber(resultData.tick) }}</b>
+              </div>
+              <div>
+                Ended: <b>{{ resultData.ended ? 'yes' : 'no' }}</b>
+              </div>
               <div>
                 Total house heating:
-                <b>{{ formatNumber(resultData.totalHouseHeatingEnergyJ) }} J</b>
+                <b>{{ formatEnergySI(resultData.totalHouseHeatingEnergyJ) }}</b>
               </div>
-              <div>Units: <b>{{ resultData.units.length }}</b></div>
+              <div>
+                Units: <b>{{ resultData.units.length }}</b>
+              </div>
             </div>
 
             <q-markup-table dense flat bordered class="q-mt-md">
@@ -141,7 +151,7 @@
                   <th class="text-left">ID</th>
                   <th class="text-left">Name</th>
                   <th class="text-right">Comfort avg</th>
-                  <th class="text-right">Energy [J]</th>
+                  <th class="text-right">Energy</th>
                   <th class="text-right">Cells</th>
                 </tr>
               </thead>
@@ -152,7 +162,7 @@
                   <td class="text-right">
                     {{ u.avgComfortScore == null ? '-' : formatNumber(u.avgComfortScore) }}
                   </td>
-                  <td class="text-right">{{ formatNumber(u.totalEnergyProducedJ) }}</td>
+                  <td class="text-right">{{ formatEnergySI(u.totalEnergyProducedJ) }}</td>
                   <td class="text-right">{{ formatNumber(u.areaCells) }}</td>
                 </tr>
               </tbody>
@@ -169,8 +179,8 @@
               <div>
                 <div class="text-h6">Allocation Output</div>
                 <div class="text-caption text-grey-7">
-                  Selected method: <b>{{ allocationMethodLabel }}</b>. Includes payment happiness
-                  score and export for comparisons.
+                  Selected method: <b>{{ allocationMethodLabel }}</b
+                  >. Includes payment happiness score and export for comparisons.
                 </div>
               </div>
               <q-btn
@@ -185,62 +195,64 @@
           <q-separator />
           <q-card-section v-if="allocationRows.length > 0">
             <div class="text-caption text-grey-7 q-mb-sm">
-              Base sum: <b>{{ formatNumber(allocationMeta.baseTotalJ) }} J</b> |
-              Billable sum:
-              <b>{{ formatNumber(allocationMeta.billableTotalJ) }} J</b>
+              Base sum: <b>{{ formatEnergySI(allocationMeta.baseTotalJ) }}</b> | Billable sum:
+              <b>{{ formatEnergySI(allocationMeta.billableTotalJ) }}</b>
             </div>
             <div v-if="allocationMethod === 'fair'" class="text-caption text-grey-7 q-mb-md">
               Formula: <b>Base = Produced + Neighbor transfer</b>,
-              <b>Billable = Base + Outside adj + Shared</b>.
-              Neighbor transfer is positive when unit received net heat from other units, negative
-              when it sent net heat to them.
+              <b>Billable = Base + Outside adj + Shared</b>. Neighbor transfer is positive when unit
+              received net heat from other units, negative when it sent net heat to them.
             </div>
             <div v-else class="text-caption text-grey-7 q-mb-md">
               Formula: <b>Billable = Base component + Variable component</b>. Base component is
-              distributed by area; variable component uses corrected measured consumption
-              (producedJ x position coefficient) and then applies 70%-200% per-area limits.
+              distributed by area; variable component uses corrected measured consumption (producedJ
+              x position coefficient) and then applies 70%-200% per-area limits.
             </div>
             <q-markup-table v-if="allocationMethod === 'fair'" dense flat bordered>
               <thead>
                 <tr>
                   <th class="text-left">Unit</th>
                   <th class="text-right">
-                    Produced [J]
+                    Produced
                     <q-icon name="help_outline" size="14px" class="q-ml-xs text-grey-6">
-                      <q-tooltip>Directly produced heating energy from the simulation export.</q-tooltip>
+                      <q-tooltip
+                        >Directly produced heating energy from the simulation export.</q-tooltip
+                      >
                     </q-icon>
                   </th>
                   <th class="text-right">
-                    Neighbor transfer [J]
+                    Neighbor transfer
                     <q-icon name="help_outline" size="14px" class="q-ml-xs text-grey-6">
                       <q-tooltip>Net unit-to-unit transfer: received minus sent.</q-tooltip>
                     </q-icon>
                   </th>
-                  <th class="text-right">Base [J]</th>
-                  <th class="text-right">Outside adj [J]</th>
-                  <th class="text-right">Shared [J]</th>
-                  <th class="text-right">Billable [J]</th>
+                  <th class="text-right">Base</th>
+                  <th class="text-right">Outside adj</th>
+                  <th class="text-right">Shared</th>
+                  <th class="text-right">Billable</th>
                   <th class="text-right">Share [%]</th>
                   <th class="text-right">Comfort</th>
                   <th class="text-right">Pay happiness</th>
-                  <th class="text-right">Cost</th>
+                  <th class="text-right">Cost [Kč]</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="row in allocationRows" :key="row.id">
                   <td>{{ row.name }} ({{ row.id }})</td>
-                  <td class="text-right">{{ formatNumber(row.producedJ) }}</td>
-                  <td class="text-right">{{ formatSignedNumber(row.neighborTransferJ) }}</td>
-                  <td class="text-right">{{ formatNumber(row.baseCostJ) }}</td>
-                  <td class="text-right">{{ formatSignedNumber(row.outsideAdjustmentJ) }}</td>
-                  <td class="text-right">{{ formatNumber(row.sharedCostJ) }}</td>
-                  <td class="text-right">{{ formatNumber(row.billableJ) }}</td>
+                  <td class="text-right">{{ formatEnergySI(row.producedJ) }}</td>
+                  <td class="text-right">{{ formatSignedEnergySI(row.neighborTransferJ) }}</td>
+                  <td class="text-right">{{ formatEnergySI(row.baseCostJ) }}</td>
+                  <td class="text-right">{{ formatSignedEnergySI(row.outsideAdjustmentJ) }}</td>
+                  <td class="text-right">{{ formatEnergySI(row.sharedCostJ) }}</td>
+                  <td class="text-right">{{ formatEnergySI(row.billableJ) }}</td>
                   <td class="text-right">{{ formatPercent(row.shareRatio) }}</td>
                   <td class="text-right">
                     {{ row.comfortScore == null ? '-' : formatNumber(row.comfortScore) }}
                   </td>
                   <td class="text-right">{{ formatNumber(row.paymentHappinessScore) }}</td>
-                  <td class="text-right"><b>{{ formatNumber(row.finalCost) }}</b></td>
+                  <td class="text-right">
+                    <b>{{ formatCurrency(row.finalCost) }}</b>
+                  </td>
                 </tr>
               </tbody>
             </q-markup-table>
@@ -249,38 +261,46 @@
                 <tr>
                   <th class="text-left">Unit</th>
                   <th class="text-right">Area [cells]</th>
-                  <th class="text-right">Produced [J]</th>
+                  <th class="text-right">Produced</th>
                   <th class="text-right">Position coef</th>
-                  <th class="text-right">Corrected cons. [J]</th>
-                  <th class="text-right">Base part [J]</th>
-                  <th class="text-right">Variable part [J]</th>
-                  <th class="text-right">Billable [J]</th>
+                  <th class="text-right">Corrected cons.</th>
+                  <th class="text-right">Base part</th>
+                  <th class="text-right">Variable part</th>
+                  <th class="text-right">Billable</th>
                   <th class="text-right">Share [%]</th>
                   <th class="text-right">Comfort</th>
                   <th class="text-right">Pay happiness</th>
-                  <th class="text-right">Cost</th>
+                  <th class="text-right">Cost [Kč]</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="row in allocationRows" :key="row.id">
                   <td>{{ row.name }} ({{ row.id }})</td>
                   <td class="text-right">{{ formatNumber(row.areaCells) }}</td>
-                  <td class="text-right">{{ formatNumber(row.producedJ) }}</td>
+                  <td class="text-right">{{ formatEnergySI(row.producedJ) }}</td>
                   <td class="text-right">
-                    {{ row.positionCoefficient == null ? '-' : formatNumber(row.positionCoefficient) }}
+                    {{
+                      row.positionCoefficient == null ? '-' : formatNumber(row.positionCoefficient)
+                    }}
                   </td>
                   <td class="text-right">
-                    {{ row.correctedConsumptionJ == null ? '-' : formatNumber(row.correctedConsumptionJ) }}
+                    {{
+                      row.correctedConsumptionJ == null
+                        ? '-'
+                        : formatEnergySI(row.correctedConsumptionJ)
+                    }}
                   </td>
-                  <td class="text-right">{{ formatNumber(row.baseCostJ) }}</td>
-                  <td class="text-right">{{ formatNumber(row.sharedCostJ) }}</td>
-                  <td class="text-right">{{ formatNumber(row.billableJ) }}</td>
+                  <td class="text-right">{{ formatEnergySI(row.baseCostJ) }}</td>
+                  <td class="text-right">{{ formatEnergySI(row.sharedCostJ) }}</td>
+                  <td class="text-right">{{ formatEnergySI(row.billableJ) }}</td>
                   <td class="text-right">{{ formatPercent(row.shareRatio) }}</td>
                   <td class="text-right">
                     {{ row.comfortScore == null ? '-' : formatNumber(row.comfortScore) }}
                   </td>
                   <td class="text-right">{{ formatNumber(row.paymentHappinessScore) }}</td>
-                  <td class="text-right"><b>{{ formatNumber(row.finalCost) }}</b></td>
+                  <td class="text-right">
+                    <b>{{ formatCurrency(row.finalCost) }}</b>
+                  </td>
                 </tr>
               </tbody>
             </q-markup-table>
@@ -288,9 +308,7 @@
           <q-card-section v-else>
             <div class="allocation-placeholder">
               <span v-if="!resultData">Import results to compute allocation.</span>
-              <span
-                v-else-if="allocationMethod === 'practical' && practicalBaseShareRatio == null"
-              >
+              <span v-else-if="allocationMethod === 'practical' && practicalBaseShareRatio == null">
                 Enter valid base component percentage.
               </span>
               <span v-else-if="effectiveTotalCost == null">
@@ -326,8 +344,12 @@
                 </tr>
                 <tr>
                   <td>Practice (base + variable)</td>
-                  <td class="text-right">{{ formatNumber(avgHappiness(practicalAllocationRows)) }}</td>
-                  <td class="text-right">{{ formatNumber(minHappiness(practicalAllocationRows)) }}</td>
+                  <td class="text-right">
+                    {{ formatNumber(avgHappiness(practicalAllocationRows)) }}
+                  </td>
+                  <td class="text-right">
+                    {{ formatNumber(minHappiness(practicalAllocationRows)) }}
+                  </td>
                 </tr>
               </tbody>
             </q-markup-table>
@@ -336,17 +358,19 @@
               <thead>
                 <tr>
                   <th class="text-left">Unit</th>
-                  <th class="text-right">Fair cost</th>
-                  <th class="text-right">Practice cost</th>
-                  <th class="text-right">Delta (Practice - Fair)</th>
+                  <th class="text-right">Fair cost [Kč]</th>
+                  <th class="text-right">Practice cost [Kč]</th>
+                  <th class="text-right">Delta (Practice - Fair) [Kč]</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="row in comparisonRows" :key="`cmp-${row.id}`">
                   <td>{{ row.name }} ({{ row.id }})</td>
-                  <td class="text-right">{{ formatNumber(row.fairCost) }}</td>
-                  <td class="text-right">{{ formatNumber(row.practicalCost) }}</td>
-                  <td class="text-right">{{ formatSignedNumber(row.practicalCost - row.fairCost) }}</td>
+                  <td class="text-right">{{ formatCurrency(row.fairCost) }}</td>
+                  <td class="text-right">{{ formatCurrency(row.practicalCost) }}</td>
+                  <td class="text-right">
+                    {{ formatSignedCurrency(row.practicalCost - row.fairCost) }}
+                  </td>
                 </tr>
               </tbody>
             </q-markup-table>
@@ -361,14 +385,12 @@
 import { computed, ref } from 'vue';
 import { OUTSIDE_TARGET_ID, SHARED_UNIT_ID } from 'src/sim/heatWorld';
 import type { SimulationResultsExport } from 'src/sim/heatSimulation';
+import { formatEnergySI } from 'src/pages/heat-sim/heatSimUtils';
 import {
   computeFairAllocation,
   computePracticalAllocation,
 } from 'src/pages/cost-allocation/allocationAlgorithms';
-import type {
-  AllocationMethod,
-  AllocationRow,
-} from 'src/pages/cost-allocation/allocationTypes';
+import type { AllocationMethod, AllocationRow } from 'src/pages/cost-allocation/allocationTypes';
 import { emptyAllocationComputation } from 'src/pages/cost-allocation/allocationTypes';
 
 const importInputEl = ref<HTMLInputElement | null>(null);
@@ -377,7 +399,7 @@ const resultData = ref<SimulationResultsExport | null>(null);
 
 const pricingMode = ref<'total' | 'perJ'>('total');
 const totalPriceInput = ref('');
-const pricePerJInput = ref('');
+const pricePerJInput = ref('0.0000027');
 
 const sharedUnitId = ref(SHARED_UNIT_ID);
 const outsideTargetId = ref(OUTSIDE_TARGET_ID);
@@ -406,13 +428,12 @@ const effectiveTotalCost = computed<number | null>(() => {
 
 const effectiveTotalCostSource = computed(() => {
   if (totalPrice.value != null) return 'from total price';
-  if (pricePerJ.value != null && resultData.value)
-    return 'pricePerJ * totalHouseHeatingEnergyJ';
+  if (pricePerJ.value != null && resultData.value) return 'pricePerJ * totalHouseHeatingEnergyJ';
   return '';
 });
 
 const effectiveTotalCostLabel = computed(() =>
-  effectiveTotalCost.value == null ? '-' : formatNumber(effectiveTotalCost.value),
+  effectiveTotalCost.value == null ? '-' : formatCurrency(effectiveTotalCost.value),
 );
 
 function parseOptionalId(v: string): string | null {
@@ -513,7 +534,9 @@ const comparisonRows = computed(() => {
         practicalCost: practical?.finalCost ?? 0,
       };
     })
-    .sort((a, b) => Math.abs(b.practicalCost - b.fairCost) - Math.abs(a.practicalCost - a.fairCost));
+    .sort(
+      (a, b) => Math.abs(b.practicalCost - b.fairCost) - Math.abs(a.practicalCost - a.fairCost),
+    );
 });
 
 function formatNumber(value: number) {
@@ -524,8 +547,16 @@ function formatPercent(ratio: number) {
   return `${(ratio * 100).toFixed(2)} %`;
 }
 
-function formatSignedNumber(value: number) {
-  const v = formatNumber(value);
+function formatCurrency(value: number) {
+  return `${formatNumber(value)} Kč`;
+}
+
+function formatSignedEnergySI(value: number) {
+  const v = formatEnergySI(value);
+  return value > 0 ? `+${v}` : v;
+}
+function formatSignedCurrency(value: number) {
+  const v = formatCurrency(value);
   return value > 0 ? `+${v}` : v;
 }
 
@@ -681,3 +712,5 @@ async function onResultsFileSelected(evt: Event) {
   color: rgba(255, 255, 255, 0.7);
 }
 </style>
+
+
